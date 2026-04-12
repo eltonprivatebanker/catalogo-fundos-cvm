@@ -1,32 +1,40 @@
-name: Atualizacao Diaria Caixa
+Skip to content
 
-on:
-  schedule:
-    - cron: '0 14 * * 1-5'
-  workflow_dispatch:
+1. eltonprivatebanker
+2. catalogo-fundos-cvm
+Repository navigation
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Baixar codigo
-        uses: actions/checkout@v4
+* Code
+* Issues
+* Pull requests
+* Actions
+* Projects
+* Wiki
+* Security and quality
+* Insights
+* Settings
+Files
+t
 
-      - name: Configurar Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+* .github/workflows
+   * main.yml
+* README.md
+* requirements.txt
+* robo_cvm.py
 
-      - name: Instalar Dependencias
-        run: pip install -r requirements.txt
-
-      - name: Executar o Robo CVM
-        run: python robo_cvm.py
-
-      - name: Salvar Resultados no GitHub
-        run: |
-          git config --global user.name "actions-user"
-          git config --global user.email "action@github.com"
-          git add dados_atuais.csv sipii_caixa_*.csv sipii_caixa_*.xlsx
-          git diff --cached --quiet || git commit -m "Dados atualizados via Robo: $(date)"
-          git push
+1. catalogo-fundos-cvm
+2. /.github
+/
+workflows
+/
+eltonprivatebanker
+Create main.yml
+9bd2356 · now
+Name
+Last commit message
+Last commit date
+..
+main.yml
+Create main.yml
+now
+catalogo-fundos-cvm/.github/workflows at main · eltonprivatebanker/catalogo-fundos-cvm
