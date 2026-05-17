@@ -1,40 +1,37 @@
-Skip to content
+name: Catalogo Fundos CVM
 
-1. eltonprivatebanker
-2. catalogo-fundos-cvm
-Repository navigation
+on:
+  schedule:
+    - cron: "0 23 * * 1-5"
+  workflow_dispatch:
 
-* Code
-* Issues
-* Pull requests
-* Actions
-* Projects
-* Wiki
-* Security and quality
-* Insights
-* Settings
-Files
-t
+permissions:
+  contents: write
 
-* .github/workflows
-   * main.yml
-* README.md
-* requirements.txt
-* robo_cvm.py
+jobs:
+  gerar-catalogo:
+    runs-on: ubuntu-latest
 
-1. catalogo-fundos-cvm
-2. /.github
-/
-workflows
-/
-eltonprivatebanker
-Create main.yml
-9bd2356 · now
-Name
-Last commit message
-Last commit date
-..
-main.yml
-Create main.yml
-now
-catalogo-fundos-cvm/.github/workflows at main · eltonprivatebanker/catalogo-fundos-cvm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Executar robo_cvm.py
+        run: python robo_cvm.py --modo-cvm --saida ./saida
+        timeout-minutes: 30
+
+      - name: Commit e push dos resultados
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add saida/
+          git diff --cached --quiet || git commit -m "Auto: catalogo atualizado $(date +'%d/%m/%Y %H:%M')"
+          git push
