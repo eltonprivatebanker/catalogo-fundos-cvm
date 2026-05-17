@@ -749,8 +749,8 @@ def salvar(df: pd.DataFrame, pasta: str):
     # CSV
     p_atual = os.path.join(pasta, "dados_atuais.csv")
     p_hist  = os.path.join(pasta, f"sipii_caixa_{ts}.csv")
-    df_out.to_csv(p_atual, index=False, encoding="utf-8-sig")
-    df_out.to_csv(p_hist,  index=False, encoding="utf-8-sig")
+    df_out.to_csv(p_atual, index=False, encoding="utf-8-sig", sep=";")
+    df_out.to_csv(p_hist,  index=False, encoding="utf-8-sig", sep=";")
 
     # Excel _ aba por categoria
     p_xlsx = os.path.join(pasta, f"sipii_caixa_{ts}.xlsx")
