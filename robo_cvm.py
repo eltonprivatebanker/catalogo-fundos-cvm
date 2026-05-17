@@ -302,24 +302,46 @@ def carregar_cadastro(sem_cache=False, filtro_gestor=None):
         df = df.rename(columns=rename)
 
     # Monta busca por CAIXA (ou outro gestor)
+    # Novo formato CVM (2024+): ADMIN virou CNPJ_ADMIN (numerico), GESTOR virou PF_PJ_GESTOR
+    # O nome da instituicao gestora/admin esta em DENOM_SOCIAL do proprio fundo
+    # ou em colunas de texto que contenham o nome
     termo = (filtro_gestor or "CAIXA").upper()
-    cols_busca = [c for c in ("ADMIN","GESTOR","DENOM_SOCIAL") if c in df.columns]
-    if not cols_busca:
-        cols_busca = [c for c in df.columns if df[c].dtype == object and "_CNPJ" not in c][:4]
+
+    # Busca apenas em colunas de texto (dtype object), excluindo CNPJ e colunas numericas
+    cols_texto = [c for c in df.columns
+                  if df[c].dtype == object
+                  and not any(x in c.upper() for x in ("CNPJ", "PF_PJ", "CD_", "TP_"))]
+    log(f"   Colunas texto para busca: {cols_texto}")
 
     mask = pd.Series([False] * len(df), index=df.index)
-    for c in cols_busca:
+    for c in cols_texto:
         mask |= df[c].fillna("").str.upper().str.contains(termo, regex=False)
 
+    log(f"   Fundos com '{termo}' em campos texto: {mask.sum()}")
+
+    # Se nao achou nada, tenta buscar pelo CNPJ da Caixa Economica Federal
+    # CNPJ da Caixa: 00.360.305/0001-04
+    if mask.sum() == 0:
+        log(f"   [AVISO] Busca por nome falhou. Tentando pelo CNPJ da Caixa (00360305)...")
+        cnpj_caixa = "00360305"
+        for c in df.columns:
+            if "cnpj" in c.lower() and "fundo" not in c.lower():
+                mask |= df[c].fillna("").str.replace(r"\D","",regex=True).str.startswith(cnpj_caixa)
+                log(f"   Busca CNPJ na coluna '{c}': {mask.sum()} encontrados")
+
     if not filtro_gestor and "SIT" in df.columns:
-        mask &= df["SIT"].fillna("").str.upper().str.contains("FUNCIONAMENTO", regex=False)
+        mask_sit = df["SIT"].fillna("").str.upper().str.contains("FUNCIONAMENTO", regex=False)
+        log(f"   Fundos em funcionamento: {mask_sit.sum()}")
+        mask &= mask_sit
 
     df_out = df[mask].copy()
-    log(f"   [OK] {len(df_out)} fundos Caixa encontrados (busca em: {cols_busca})")
+    log(f"   [OK] {len(df_out)} fundos encontrados com '{termo}'")
 
     if df_out.empty:
-        sample = df[cols_busca[0]].dropna().unique()[:5].tolist() if cols_busca else []
-        log(f"   [AVISO] Nenhum fundo! Amostra da coluna '{cols_busca[0] if cols_busca else '?'}': {sample}")
+        log(f"   [AVISO] Nenhum fundo encontrado!")
+        log(f"   Todas as colunas: {list(df.columns)}")
+        for c in cols_texto[:3]:
+            log(f"   Amostra '{c}': {df[c].dropna().unique()[:3].tolist()}")
 
     return df_out
 
