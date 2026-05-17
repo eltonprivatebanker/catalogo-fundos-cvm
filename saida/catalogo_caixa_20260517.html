@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Catalogo Fundos Caixa _ CVM</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Segoe UI",Arial,sans-serif;background:#0f172a;color:#e5e7eb;padding:20px}
+h1{color:#fff;font-size:1.5rem;margin-bottom:4px}
+.sub{color:#64748b;font-size:13px;margin-bottom:20px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px}
+.card{background:#111827;border:1px solid #1e293b;border-radius:12px;padding:14px 16px}
+.card span{color:#64748b;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.card strong{display:block;font-size:22px;margin-top:4px;color:#fff}
+.box{background:#111827;border:1px solid #1e293b;border-radius:12px;padding:18px;margin-bottom:20px;overflow-x:auto}
+.toolbar{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+input[type=text]{flex:1;min-width:200px;padding:9px 13px;border-radius:9px;border:1px solid #334155;background:#020617;color:#fff;font-size:13px}
+select{padding:9px 13px;border-radius:9px;border:1px solid #334155;background:#020617;color:#cbd5e1;font-size:13px}
+.btn{background:#1e293b;color:#cbd5e1;border:1px solid #334155;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:12px}
+.btn:hover{background:#334155}
+.pag{color:#64748b;font-size:12px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{background:#1e293b;color:#94a3b8;text-align:left;padding:8px 10px;cursor:pointer;user-select:none;white-space:nowrap}
+th:hover{color:#fff}
+th::after{content:" _";opacity:.35;font-size:10px}
+td{padding:7px 10px;border-bottom:1px solid #1e293b;white-space:nowrap}
+tr:hover td{background:#1f2937}
+.pos{color:#22c55e;font-weight:600}
+.neg{color:#ef4444;font-weight:600}
+.footer{color:#475569;font-size:11px;margin-top:20px;text-align:center}
+</style>
+</head>
+<body>
+<h1>Catalogo de Fundos Caixa _ CVM</h1>
+<p class="sub">Dados: dados.cvm.gov.br &nbsp;_&nbsp; Gerado em 17/05/2026 &nbsp;_&nbsp; github.com/eltonprivatebanker/catalogo-fundos-cvm</p>
+
+<div class="cards">
+  <div class="card"><span>Total de Fundos</span><strong>1</strong></div>
+  <div class="card"><span>Com Cota Atual</span><strong class="pos">0</strong></div>
+  <div class="card"><span>Sem Dados</span><strong>1</strong></div>
+  <div class="card"><span>Atualizado</span><strong style="font-size:14px">17/05/2026</strong></div>
+</div>
+
+<div class="box">
+  <div class="toolbar">
+    <input type="text" id="busca" placeholder="Buscar por nome, CNPJ, categoria..." oninput="filtrar()">
+    <select id="filtroCat" onchange="filtrar()">
+      <option value="">Todas as categorias</option>
+      <option value="NAN">NAN</option>
+    </select>
+    <button class="btn" onclick="mudarPag(-1)">_ Anterior</button>
+    <span class="pag" id="pagInfo"></span>
+    <button class="btn" onclick="mudarPag(1)">Proxima -></button>
+  </div>
+  <table id="tbl">
+    <thead><tr><th onclick="sortTable(this)">Categoria</th><th onclick="sortTable(this)">Fundo</th><th onclick="sortTable(this)">Data Inicio</th></tr></thead>
+    <tbody id="tbody"><tr><td>NAN</td><td>FUNDO DE INVESTIMENTO DO FUNDO DE GARANTIA DO TEMPO DE SERVIÇO - FI-FGTS</td><td>2008-07-01</td></tr>
+</tbody>
+  </table>
+</div>
+
+<div class="footer">
+  Fonte: CVM Dados Abertos _ Calculo por variacao de cota _ Robo CVM v2.0
+</div>
+
+<script>
+var POR_PAG = 50, pag = 0, linhasFiltradas = [];
+
+function filtrar() {
+  var t = document.getElementById("busca").value.toLowerCase();
+  var cat = document.getElementById("filtroCat").value.toLowerCase();
+  var rows = Array.from(document.querySelectorAll("#tbody tr"));
+  linhasFiltradas = rows.filter(function(r) {
+    return r.innerText.toLowerCase().includes(t) &&
+           (cat === "" || r.innerText.toLowerCase().includes(cat));
+  });
+  pag = 0; paginar();
+}
+
+function paginar() {
+  var rows = Array.from(document.querySelectorAll("#tbody tr"));
+  var ativas = linhasFiltradas.length || document.getElementById("busca").value || document.getElementById("filtroCat").value
+    # linhasFiltradas : rows;
+  var total = ativas.length;
+  var totalPag = Math.max(1, Math.ceil(total / POR_PAG));
+  if (pag >= totalPag) pag = totalPag - 1;
+  var set = new Set(ativas.slice(pag * POR_PAG, (pag + 1) * POR_PAG));
+  rows.forEach(function(r) { r.style.display = set.has(r) _ "" : "none"; });
+  document.getElementById("pagInfo").textContent =
+    "Pag " + (pag+1) + "/" + totalPag + " _ " + total.toLocaleString("pt-BR") + " fundos";
+}
+
+function mudarPag(d) { pag = Math.max(0, pag + d); paginar(); }
+
+function sortTable(th) {
+  var idx = Array.from(th.closest("tr").cells).indexOf(th);
+  var tbody = document.getElementById("tbody");
+  var rows = Array.from(tbody.rows);
+  var asc = th.dataset.asc !== "1";
+  th.dataset.asc = asc _ "1" : "0";
+  rows.sort(function(a,b) {
+    var va = a.cells[idx]_.innerText.trim() || "";
+    var vb = b.cells[idx]_.innerText.trim() || "";
+    var na = parseFloat(va.replace(/[^0-9.,-]/g,"").replace(",","."));
+    var nb = parseFloat(vb.replace(/[^0-9.,-]/g,"").replace(",","."));
+    if (!isNaN(na) && !isNaN(nb)) return asc _ na-nb : nb-na;
+    return asc _ va.localeCompare(vb,"pt-BR") : vb.localeCompare(va,"pt-BR");
+  });
+  rows.forEach(function(r) { tbody.appendChild(r); });
+  paginar();
+}
+
+filtrar();
+</script>
+</body>
+</html>
