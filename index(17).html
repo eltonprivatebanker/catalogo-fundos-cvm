@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Catalogo de Fundos Caixa — CVM Open Data</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:       #07090f;
+  --surface:  #0d1117;
+  --border:   #1c2333;
+  --border2:  #2d3748;
+  --text:     #cdd5e0;
+  --muted:    #556070;
+  --accent:   #00d4aa;
+  --accent2:  #0099ff;
+  --pos:      #22c55e;
+  --neg:      #f43f5e;
+  --warn:     #f59e0b;
+  --mono:     'DM Mono', monospace;
+  --sans:     'DM Sans', sans-serif;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── GRID BACKGROUND ── */
+body::before {
+  content: '';
+  position: fixed; inset: 0; z-index: 0;
+  background-image:
+    linear-gradient(rgba(0,212,170,.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,212,170,.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+}
+
+.container { max-width: 1400px; margin: auto; padding: 0 24px; position: relative; z-index: 1; }
+
+/* ── HEADER ── */
+header {
+  padding: 40px 0 32px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 32px;
+}
+
+.header-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.brand { display: flex; align-items: center; gap: 14px; }
+
+.brand-icon {
+  width: 44px; height: 44px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; flex-shrink: 0;
+}
+
+.brand-text h1 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #fff;
+  letter-spacing: -.02em;
+}
+
+.brand-text p {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--mono);
+  margin-top: 2px;
+}
+
+.header-meta {
+  display: flex; gap: 20px; align-items: center;
+}
+
+.badge {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border2);
+  color: var(--muted);
+  background: var(--surface);
+}
+
+.badge.live {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.badge.live::before {
+  content: '';
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-right: 6px;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .3; }
+}
+
+/* ── STATUS BANNER ── */
+#statusBanner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 13px;
+  margin-bottom: 28px;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+#statusBanner.loading { border-color: var(--accent2); color: var(--accent2); }
+#statusBanner.ok      { border-color: var(--accent);  color: var(--accent); }
+#statusBanner.error   { border-color: var(--neg);     color: var(--neg); }
+
+.spinner {
+  width: 14px; height: 14px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── STAT CARDS ── */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px 20px;
+  transition: border-color .2s;
+}
+
+.card:hover { border-color: var(--border2); }
+
+.card-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--muted);
+  font-family: var(--mono);
+  margin-bottom: 8px;
+}
+
+.card-value {
+  font-size: 26px;
+  font-weight: 600;
+  color: #fff;
+  line-height: 1;
+}
+
+.card-value.accent  { color: var(--accent); }
+.card-value.accent2 { color: var(--accent2); }
+.card-value.warn    { color: var(--warn); }
+
+/* ── TOOLBAR ── */
+.toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.search-wrap {
+  flex: 1;
+  min-width: 240px;
+  position: relative;
+}
+
+.search-icon {
+  position: absolute;
+  left: 12px; top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: 14px;
+  pointer-events: none;
+}
+
+input[type=text] {
+  width: 100%;
+  padding: 10px 14px 10px 36px;
+  border-radius: 10px;
+  border: 1px solid var(--border2);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  outline: none;
+  transition: border-color .2s;
+}
+
+input[type=text]:focus { border-color: var(--accent); }
+input[type=text]::placeholder { color: var(--muted); }
+
+select {
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border2);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color .2s;
+}
+
+select:focus { border-color: var(--accent); }
+
+.btn {
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border2);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all .2s;
+  white-space: nowrap;
+}
+
+.btn:hover { background: var(--border2); color: #fff; }
+
+.pag-info {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* ── TABLE ── */
+.table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  margin-bottom: 28px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+thead th {
+  background: #0a0f1a;
+  color: var(--muted);
+  text-align: left;
+  padding: 11px 14px;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+  transition: color .15s;
+}
+
+thead th:hover { color: var(--accent); }
+thead th.sorted { color: var(--accent); }
+thead th::after { content: " ⇅"; opacity: .3; font-size: 9px; }
+thead th.asc::after  { content: " ↑"; opacity: 1; }
+thead th.desc::after { content: " ↓"; opacity: 1; }
+
+tbody td {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+tbody tr:last-child td { border-bottom: none; }
+
+tbody tr {
+  transition: background .1s;
+}
+
+tbody tr:hover td { background: rgba(255,255,255,.025); }
+
+.pos { color: var(--pos); font-weight: 600; font-family: var(--mono); }
+.neg { color: var(--neg); font-weight: 600; font-family: var(--mono); }
+.mono { font-family: var(--mono); }
+
+.cat-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-family: var(--mono);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* Category colors */
+.cat-rf    { background: rgba(0,153,255,.15); color: #60b8ff; border: 1px solid rgba(0,153,255,.3); }
+.cat-ac    { background: rgba(249,115,22,.15); color: #fb8a4b; border: 1px solid rgba(249,115,22,.3); }
+.cat-mm    { background: rgba(168,85,247,.15); color: #c084fc; border: 1px solid rgba(168,85,247,.3); }
+.cat-fii   { background: rgba(236,201,75,.15); color: #f6d860; border: 1px solid rgba(236,201,75,.3); }
+.cat-priv  { background: rgba(0,212,170,.15); color: #00d4aa; border: 1px solid rgba(0,212,170,.3); }
+.cat-other { background: rgba(100,116,139,.15); color: #94a3b8; border: 1px solid rgba(100,116,139,.3); }
+
+/* ── CATEGORY STATS ── */
+.cat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.cat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  cursor: pointer;
+  transition: all .2s;
+}
+
+.cat-card:hover, .cat-card.active {
+  border-color: var(--accent);
+  background: rgba(0,212,170,.05);
+}
+
+.cat-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.cat-card-name {
+  font-size: 11px;
+  font-family: var(--mono);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.cat-card-count {
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+.cat-bar-wrap { height: 3px; background: var(--border2); border-radius: 2px; margin-bottom: 8px; }
+.cat-bar { height: 100%; border-radius: 2px; background: var(--accent); transition: width .4s; }
+
+.cat-stats {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+/* ── FOOTER ── */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+footer p {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+footer a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+footer a:hover { text-decoration: underline; }
+
+/* ── SECTION TITLE ── */
+.section-title {
+  font-size: 11px;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--muted);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.section-title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* ── RESPONSIVE ── */
+@media (max-width: 600px) {
+  .header-top { flex-direction: column; }
+  .cards { grid-template-columns: repeat(2, 1fr); }
+  .cat-grid { grid-template-columns: 1fr 1fr; }
+  .card-value { font-size: 20px; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <div class="header-top">
+      <div class="brand">
+        <div class="brand-icon">&#x1F4CA;</div>
+        <div class="brand-text">
+          <h1>Catalogo de Fundos Caixa</h1>
+          <p>dados.cvm.gov.br &nbsp;&middot;&nbsp; github.com/eltonprivatebanker/catalogo-fundos-cvm</p>
+        </div>
+      </div>
+      <div class="header-meta">
+        <span class="badge live" id="badgeLive">Atualizacao automatica</span>
+        <span class="badge" id="badgeData">--/--/----</span>
+      </div>
+    </div>
+  </header>
+
+  <div id="statusBanner" class="loading">
+    <div class="spinner"></div>
+    <span id="statusMsg">Carregando dados da CVM...</span>
+  </div>
+
+  <!-- STAT CARDS -->
+  <div class="cards" id="cards">
+    <div class="card"><div class="card-label">Total de Fundos</div><div class="card-value" id="cTotal">--</div></div>
+    <div class="card"><div class="card-label">Com Cota Atual</div><div class="card-value accent" id="cComCota">--</div></div>
+    <div class="card"><div class="card-label">Sem Dados</div><div class="card-value warn" id="cSemDados">--</div></div>
+    <div class="card"><div class="card-label">Com Acum. 12M</div><div class="card-value accent2" id="cCom12m">--</div></div>
+    <div class="card"><div class="card-label">Categorias</div><div class="card-value" id="cCats">--</div></div>
+  </div>
+
+  <!-- CATEGORIES -->
+  <p class="section-title">Por Categoria</p>
+  <div class="cat-grid" id="catGrid"></div>
+
+  <!-- TABLE -->
+  <p class="section-title">Todos os Fundos</p>
+
+  <div class="toolbar">
+    <div class="search-wrap">
+      <span class="search-icon">&#x1F50D;</span>
+      <input type="text" id="busca" placeholder="Buscar por nome, CNPJ, categoria..." oninput="filtrar()">
+    </div>
+    <select id="filtroCat" onchange="filtrar()">
+      <option value="">Todas as categorias</option>
+    </select>
+    <select id="filtroAberto" onchange="filtrar()">
+      <option value="">Aberto / Fechado</option>
+      <option value="Sim">Aberto para captacao</option>
+      <option value="Nao">Fechado</option>
+    </select>
+    <button class="btn" onclick="mudarPag(-1)">&#8592; Ant.</button>
+    <span class="pag-info" id="pagInfo">--</span>
+    <button class="btn" onclick="mudarPag(1)">Prox. &#8594;</button>
+  </div>
+
+  <div class="table-wrap">
+    <table id="tbl">
+      <thead id="thead"></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <footer>
+    <p>
+      Fonte: <a href="https://dados.cvm.gov.br" target="_blank">CVM Dados Abertos</a>
+      &nbsp;&middot;&nbsp;
+      Rentabilidade calculada por variacao de cota
+      &nbsp;&middot;&nbsp;
+      <a href="https://github.com/eltonprivatebanker/catalogo-fundos-cvm" target="_blank">Ver codigo no GitHub</a>
+    </p>
+    <p>Atualizado automaticamente de segunda a sexta</p>
+  </footer>
+
+</div>
+
+<script>
+// ── CONFIG ──────────────────────────────────────────────
+var CSV_URL = 'saida/dados_atuais.csv';
+var POR_PAG = 50;
+
+// ── STATE ──────────────────────────────────────────────
+var allRows = [];
+var filteredRows = [];
+var columns = [];
+var pag = 0;
+var sortCol = -1;
+var sortAsc = true;
+var catAtiva = '';
+
+// ── CATEGORY CLASSES ────────────────────────────────────
+function catClass(cat) {
+  cat = (cat || '').toUpperCase();
+  if (cat.includes('ACOES') || cat.includes('ACAO')) return 'cat-ac';
+  if (cat.includes('MULTI'))                          return 'cat-mm';
+  if (cat.includes('FII') || cat.includes('IMOB'))   return 'cat-fii';
+  if (cat.includes('PRIVAT'))                        return 'cat-priv';
+  if (cat.includes('RENDA') || cat.includes('RF'))   return 'cat-rf';
+  return 'cat-other';
+}
+
+// ── CSV PARSER ──────────────────────────────────────────
+function parseCSV(text) {
+  var lines = text.trim().split('\n');
+  var headers = lines[0].split(',').map(function(h) { return h.trim().replace(/^"|"$/g,''); });
+  var rows = [];
+  for (var i = 1; i < lines.length; i++) {
+    var vals = lines[i].split(',');
+    // Handle quoted fields
+    var row = {};
+    var col = 0;
+    var inQuote = false;
+    var cell = '';
+    for (var c = 0; c < lines[i].length; c++) {
+      var ch = lines[i][c];
+      if (ch === '"') { inQuote = !inQuote; }
+      else if (ch === ',' && !inQuote) { row[headers[col]] = cell.trim(); cell = ''; col++; }
+      else { cell += ch; }
+    }
+    row[headers[col]] = cell.trim();
+    if (Object.keys(row).length > 1) rows.push(row);
+  }
+  return { headers: headers, rows: rows };
+}
+
+// ── PARSE NUMBER (BR format) ────────────────────────────
+function parseNum(v) {
+  if (!v || v === '--' || v === '') return null;
+  return parseFloat(String(v).replace(/\./g,'').replace(',','.'));
+}
+
+// ── LOAD DATA ───────────────────────────────────────────
+fetch(CSV_URL + '?t=' + Date.now())
+  .then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.text();
+  })
+  .then(function(text) {
+    var parsed = parseCSV(text);
+    columns   = parsed.headers;
+    allRows   = parsed.rows;
+    onDataLoaded();
+  })
+  .catch(function(e) {
+    setBanner('error', 'Erro ao carregar dados: ' + e.message);
+  });
+
+function onDataLoaded() {
+  // Detect update date from first row
+  var today = new Date();
+  document.getElementById('badgeData').textContent =
+    today.toLocaleDateString('pt-BR');
+
+  // Stats
+  var total    = allRows.length;
+  var comCota  = allRows.filter(function(r) { return r['Cota (R$)'] && r['Cota (R$)'] !== ''; }).length;
+  var sem      = total - comCota;
+  var com12m   = allRows.filter(function(r) { return r['Acum. 12M (%)'] && r['Acum. 12M (%)'] !== ''; }).length;
+  var cats     = new Set(allRows.map(function(r) { return r['Categoria']; })).size;
+
+  document.getElementById('cTotal').textContent   = total.toLocaleString('pt-BR');
+  document.getElementById('cComCota').textContent  = comCota.toLocaleString('pt-BR');
+  document.getElementById('cSemDados').textContent = sem;
+  document.getElementById('cCom12m').textContent   = com12m.toLocaleString('pt-BR');
+  document.getElementById('cCats').textContent     = cats;
+
+  // Category cards
+  buildCatCards();
+
+  // Populate filter
+  var sel = document.getElementById('filtroCat');
+  Array.from(new Set(allRows.map(function(r) { return r['Categoria']; }))).sort().forEach(function(c) {
+    var o = document.createElement('option');
+    o.value = c; o.textContent = c;
+    sel.appendChild(o);
+  });
+
+  // Build table header
+  var thead = document.getElementById('thead');
+  var cols = columns.filter(function(c) {
+    return c !== 'CNPJ' && allRows.some(function(r) { return r[c] && r[c] !== ''; });
+  });
+  columns = cols; // update to visible only
+  thead.innerHTML = '<tr>' + cols.map(function(c, i) {
+    return '<th onclick="sortBy(' + i + ')">' + c + '</th>';
+  }).join('') + '</tr>';
+
+  setBanner('ok', 'Dados carregados: ' + total + ' fundos Caixa via CVM Open Data');
+  filtrar();
+}
+
+// ── CATEGORY CARDS ──────────────────────────────────────
+function buildCatCards() {
+  var catMap = {};
+  var rentCol = 'Acum. 12M (%)';
+  allRows.forEach(function(r) {
+    var c = r['Categoria'] || 'OUTROS';
+    if (!catMap[c]) catMap[c] = { count: 0, vals: [] };
+    catMap[c].count++;
+    var v = parseNum(r[rentCol]);
+    if (v !== null) catMap[c].vals.push(v);
+  });
+
+  var max = Math.max.apply(null, Object.values(catMap).map(function(v) { return v.count; }));
+  var grid = document.getElementById('catGrid');
+  grid.innerHTML = '';
+
+  Object.keys(catMap).sort().forEach(function(cat) {
+    var d = catMap[cat];
+    var media = d.vals.length ? d.vals.reduce(function(a,b){return a+b;},0)/d.vals.length : null;
+    var melhor = d.vals.length ? Math.max.apply(null,d.vals) : null;
+
+    var card = document.createElement('div');
+    card.className = 'cat-card';
+    card.onclick = function() { filtrarPorCat(cat); };
+    card.innerHTML =
+      '<div class="cat-card-header">' +
+        '<span class="cat-card-name"><span class="cat-badge ' + catClass(cat) + '">' + cat + '</span></span>' +
+        '<span class="cat-card-count">' + d.count + ' fundos</span>' +
+      '</div>' +
+      '<div class="cat-bar-wrap"><div class="cat-bar" style="width:' + Math.round(d.count/max*100) + '%"></div></div>' +
+      '<div class="cat-stats">' +
+        '<span>Media 12M: ' + (media !== null ? (media >= 0 ? '+' : '') + media.toFixed(1) + '%' : '--') + '</span>' +
+        '<span>Melhor: ' + (melhor !== null ? '+' + melhor.toFixed(1) + '%' : '--') + '</span>' +
+      '</div>';
+    grid.appendChild(card);
+  });
+}
+
+function filtrarPorCat(cat) {
+  var sel = document.getElementById('filtroCat');
+  if (catAtiva === cat) {
+    catAtiva = '';
+    sel.value = '';
+  } else {
+    catAtiva = cat;
+    sel.value = cat;
+  }
+  document.querySelectorAll('.cat-card').forEach(function(el) {
+    el.classList.toggle('active', el.querySelector('.cat-badge') &&
+      el.querySelector('.cat-badge').textContent === catAtiva);
+  });
+  filtrar();
+}
+
+// ── FILTER + RENDER ─────────────────────────────────────
+function filtrar() {
+  var termo = document.getElementById('busca').value.toLowerCase();
+  var cat   = document.getElementById('filtroCat').value;
+  var ab    = document.getElementById('filtroAberto').value;
+
+  filteredRows = allRows.filter(function(r) {
+    var text = Object.values(r).join(' ').toLowerCase();
+    if (termo && !text.includes(termo)) return false;
+    if (cat && r['Categoria'] !== cat)  return false;
+    if (ab && r['Aberto Captacao'] !== ab) return false;
+    return true;
+  });
+
+  pag = 0;
+  renderTabela();
+}
+
+function renderTabela() {
+  var tbody = document.getElementById('tbody');
+  var total = filteredRows.length;
+  var totalPag = Math.max(1, Math.ceil(total / POR_PAG));
+  if (pag >= totalPag) pag = totalPag - 1;
+
+  var slice = filteredRows.slice(pag * POR_PAG, (pag + 1) * POR_PAG);
+
+  var pctCols = new Set(['Variacao Dia (%)', 'Acum. Mes (%)', 'Acum. Ano (%)', 'Acum. 12M (%)',
+                         'Taxa Adm %', '% CDI Ano', '% CDI 12m']);
+  var monoCols = new Set(['Cota (R$)', 'PL (milhoes R$)', 'PL Medio 30d (R$ mi)',
+                          'Aplic. Minima (R$)', 'Data Inicio']);
+
+  tbody.innerHTML = slice.map(function(row) {
+    return '<tr>' + columns.map(function(col) {
+      var v = row[col] || '';
+      if (!v) return '<td style="color:var(--muted)">—</td>';
+
+      if (col === 'Categoria') {
+        return '<td><span class="cat-badge ' + catClass(v) + '">' + v + '</span></td>';
+      }
+      if (col === 'Fundo') {
+        return '<td style="max-width:260px;overflow:hidden;text-overflow:ellipsis" title="' + v + '">' + v + '</td>';
+      }
+      if (pctCols.has(col)) {
+        var n = parseNum(v);
+        if (n !== null) {
+          var cls = n >= 0 ? 'pos' : 'neg';
+          return '<td class="' + cls + '">' + v + '</td>';
+        }
+      }
+      if (monoCols.has(col)) {
+        return '<td class="mono" style="color:var(--muted)">' + v + '</td>';
+      }
+      return '<td>' + v + '</td>';
+    }).join('') + '</tr>';
+  }).join('');
+
+  document.getElementById('pagInfo').textContent =
+    'Pag ' + (pag+1) + '/' + totalPag + ' · ' + total.toLocaleString('pt-BR') + ' fundos';
+}
+
+// ── PAGINATION ──────────────────────────────────────────
+function mudarPag(d) {
+  var total = filteredRows.length;
+  var totalPag = Math.max(1, Math.ceil(total / POR_PAG));
+  pag = Math.max(0, Math.min(pag + d, totalPag - 1));
+  renderTabela();
+  window.scrollTo({ top: document.querySelector('.section-title:last-of-type').offsetTop - 80, behavior: 'smooth' });
+}
+
+// ── SORT ────────────────────────────────────────────────
+function sortBy(idx) {
+  var ths = document.querySelectorAll('thead th');
+  ths.forEach(function(th, i) {
+    th.classList.remove('asc', 'desc', 'sorted');
+    if (i === idx) {
+      sortAsc = (sortCol === idx) ? !sortAsc : true;
+      sortCol = idx;
+      th.classList.add('sorted', sortAsc ? 'asc' : 'desc');
+    }
+  });
+  var col = columns[idx];
+  filteredRows.sort(function(a, b) {
+    var va = a[col] || ''; var vb = b[col] || '';
+    var na = parseNum(va); var nb = parseNum(vb);
+    if (na !== null && nb !== null) return sortAsc ? na - nb : nb - na;
+    if (na !== null) return sortAsc ? -1 : 1;
+    if (nb !== null) return sortAsc ? 1 : -1;
+    return sortAsc ? va.localeCompare(vb,'pt-BR') : vb.localeCompare(va,'pt-BR');
+  });
+  pag = 0;
+  renderTabela();
+}
+
+// ── BANNER ──────────────────────────────────────────────
+function setBanner(type, msg) {
+  var b = document.getElementById('statusBanner');
+  b.className = type;
+  b.innerHTML = type === 'loading'
+    ? '<div class="spinner"></div><span>' + msg + '</span>'
+    : '<span>' + (type === 'ok' ? '&#10003;' : '&#10007;') + '&nbsp;&nbsp;' + msg + '</span>';
+}
+</script>
+</body>
+</html>
