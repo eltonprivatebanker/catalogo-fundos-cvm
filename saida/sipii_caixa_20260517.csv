@@ -1,2 +1,2 @@
-﻿Categoria,Fundo,Data Inicio,Cota (R$),Variacao Dia (%),Acum. Mes (%),Acum. Ano (%),Acum. 12M (%),PL (milhoes R$),PL Medio 30d (R$ mi),Taxa Adm %,Aberto Captacao,Aplic. Minima (R$),Benchmark,Resgate Conv.,Resgate Pgto,% CDI Ano,% CDI 12m
-NAN,FUNDO DE INVESTIMENTO DO FUNDO DE GARANTIA DO TEMPO DE SERVIÇO - FI-FGTS,2008-07-01,,,,,,,,,,,,,,,
+﻿Categoria;Fundo;Data Inicio;Cota (R$);Variacao Dia (%);Acum. Mes (%);Acum. Ano (%);Acum. 12M (%);PL (milhoes R$);PL Medio 30d (R$ mi);Taxa Adm %;Aberto Captacao;Aplic. Minima (R$);Benchmark;Resgate Conv.;Resgate Pgto;% CDI Ano;% CDI 12m
+NAN;FUNDO DE INVESTIMENTO DO FUNDO DE GARANTIA DO TEMPO DE SERVIÇO - FI-FGTS;2008-07-01;;;;;;;;;;;;;;;
