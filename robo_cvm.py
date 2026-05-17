@@ -260,42 +260,68 @@ def ler_lista_cnpjs(caminho: str) -> tuple:
 # ==========================================================
 # CADASTRO CVM
 # ==========================================================
-def carregar_cadastro(sem_cache: bool = False, filtro_gestor: Optional[str] = None) -> pd.DataFrame:
-    """
-    Baixa o cadastro nacional de fundos da CVM.
-    Se filtro_gestor for informado, filtra por GESTOR ou ADMIN.
-    Sem filtro, retorna fundos da Caixa em funcionamento.
-    """
-    log("[1] Cadastro CVM nacional")
+def carregar_cadastro(sem_cache=False, filtro_gestor=None):
+    """Baixa o cadastro CVM com deteccao automatica de colunas."""
+    log("[1/4] Cadastro CVM nacional")
     dados = baixar_bytes(URL_CAD, "cad_fi.csv", sem_cache)
     if dados is None:
         return pd.DataFrame()
 
     df = baixar_csv_bytes(dados)
     df.columns = df.columns.str.strip()
-    df["_CNPJ_NORM"] = df["CNPJ_FUNDO"].apply(norm_cnpj)
+    log(f"   Total no cadastro: {len(df)} fundos")
+    log(f"   Colunas: {list(df.columns[:8])}...")
 
-    # Filtro por gestor customizado
-    if filtro_gestor:
-        termo = filtro_gestor.upper()
-        mask = (
-            df["ADMIN"].fillna("").str.upper().str.contains(termo) |
-            df["GESTOR"].fillna("").str.upper().str.contains(termo)
-        )
-        df = df[mask].copy()
-        log(f"   [OK] {len(df)} fundos com gestor/admin contendo '{filtro_gestor}'")
-        return df
+    # Detecta coluna CNPJ
+    col_cnpj = next((c for c in df.columns if "cnpj" in c.lower()), None)
+    if col_cnpj is None:
+        log("   [ERRO] Coluna CNPJ nao encontrada!")
+        return pd.DataFrame()
+    df["_CNPJ_NORM"] = df[col_cnpj].apply(norm_cnpj)
 
-    # Padrao: Caixa em funcionamento
-    mask = (
-        df["ADMIN"].fillna("").str.upper().str.contains("CAIXA") |
-        df["GESTOR"].fillna("").str.upper().str.contains("CAIXA")
-    ) & df["SIT"].fillna("").str.upper().str.contains("FUNCIONAMENTO")
+    # Padroniza colunas (detecta por substring)
+    def detect(keywords):
+        return next((c for c in df.columns
+                     if any(k in c.lower() for k in keywords)), None)
 
-    df = df[mask].copy()
-    log(f"   [OK] {len(df)} fundos Caixa em funcionamento no cadastro CVM")
-    return df
+    col_sit    = detect(["sit"])
+    col_admin  = detect(["admin"])
+    col_gestor = detect(["gestor"])
+    col_nome   = detect(["denom", "razao", "nome"])
+    col_classe = detect(["classe"])
+    col_dt     = detect(["dt_ini", "dt_reg", "data_ini"])
 
+    log(f"   sit={col_sit} admin={col_admin} gestor={col_gestor} nome={col_nome}")
+
+    rename = {}
+    for src, dst in [(col_sit,"SIT"),(col_admin,"ADMIN"),(col_gestor,"GESTOR"),
+                     (col_nome,"DENOM_SOCIAL"),(col_classe,"CLASSE"),(col_dt,"DT_INI_ATIV")]:
+        if src and src != dst:
+            rename[src] = dst
+    if rename:
+        df = df.rename(columns=rename)
+
+    # Monta busca por CAIXA (ou outro gestor)
+    termo = (filtro_gestor or "CAIXA").upper()
+    cols_busca = [c for c in ("ADMIN","GESTOR","DENOM_SOCIAL") if c in df.columns]
+    if not cols_busca:
+        cols_busca = [c for c in df.columns if df[c].dtype == object and "_CNPJ" not in c][:4]
+
+    mask = pd.Series([False] * len(df), index=df.index)
+    for c in cols_busca:
+        mask |= df[c].fillna("").str.upper().str.contains(termo, regex=False)
+
+    if not filtro_gestor and "SIT" in df.columns:
+        mask &= df["SIT"].fillna("").str.upper().str.contains("FUNCIONAMENTO", regex=False)
+
+    df_out = df[mask].copy()
+    log(f"   [OK] {len(df_out)} fundos Caixa encontrados (busca em: {cols_busca})")
+
+    if df_out.empty:
+        sample = df[cols_busca[0]].dropna().unique()[:5].tolist() if cols_busca else []
+        log(f"   [AVISO] Nenhum fundo! Amostra da coluna '{cols_busca[0] if cols_busca else '?'}': {sample}")
+
+    return df_out
 
 # ==========================================================
 # INFORME DI_RIO
