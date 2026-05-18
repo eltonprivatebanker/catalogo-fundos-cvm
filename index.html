@@ -1,586 +1,711 @@
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Catalogo de Fundos Caixa - CVM Open Data</title>
-<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,300&display=swap" rel="stylesheet">
-<style>
-:root {
-  --bg:      #07090f;
-  --sur:     #0d1117;
-  --bdr:     #1c2333;
-  --bdr2:    #2d3748;
-  --txt:     #cdd5e0;
-  --muted:   #556070;
-  --acc:     #00d4aa;
-  --acc2:    #3b82f6;
-  --pos:     #22c55e;
-  --neg:     #f43f5e;
-  --warn:    #f59e0b;
-  --mono:    'DM Mono', monospace;
-  --sans:    'DM Sans', sans-serif;
+"""
+============================================================
+ROBO CVM v3.0 - Catalogo de Fundos Caixa
+============================================================
+Fonte   : dados.cvm.gov.br  (API oficial, gratuita)
+GitHub  : eltonprivatebanker/catalogo-fundos-cvm
+
+Novidades v3.0:
+  - Deteccao automatica do formato do cadastro CVM (v1/v2/v3)
+  - Suporte a Resolucao CVM 175 (novo formato 2024+)
+  - Busca Caixa por nome E por CNPJ do administrador
+  - Salva periodos.json para o HTML saber quais arquivos existem
+  - Filtros avancados no HTML (categoria, risco, rentabilidade minima)
+
+Uso:
+  python robo_cvm.py                      # auto-detecta formato
+  python robo_cvm.py --sem-cache          # forca redownload
+  python robo_cvm.py --lista fundos.json  # usa lista de CNPJs
+  python robo_cvm.py --saida ./saida      # pasta de saida
+============================================================
+"""
+
+import argparse
+import glob
+import io
+import json
+import os
+import re
+import time
+import unicodedata
+import zipfile
+from datetime import date, datetime
+from io import BytesIO
+from typing import Optional
+
+import pandas as pd
+import requests
+
+# ==========================================================
+# CONFIGURACAO
+# ==========================================================
+URL_CAD     = "https://dados.cvm.gov.br/dados/FI/CAD/DADOS/cad_fi.csv"
+URL_INF_MES = "https://dados.cvm.gov.br/dados/FI/DOC/INF_DIARIO/DADOS/inf_diario_fi_{yyyymm}.zip"
+CACHE_DIR   = ".cache_cvm"
+TIMEOUT     = 90
+MAX_RETRY   = 5
+
+# CNPJs conhecidos da Caixa como administradora (para busca no formato v3)
+CAIXA_CNPJS = [
+    "00360305",  # Caixa Economica Federal
+    "36113876",  # Caixa DTVM S.A.
+    "45756448",  # Caixa Asset Management
+]
+
+# Mapeamento de classes CVM para categorias leg-veis
+CLASSE_MAP = {
+    "Fundo de Renda Fixa":                "RENDA FIXA",
+    "Fundo de Acoes":                     "ACOES",
+    "Fundo Multimercado":                 "MULTIMERCADO",
+    "Fundo Cambial":                      "CAMBIAL",
+    "Fundo de Indice de Mercado":         "FUNDO DE INDICE",
+    "Fundo Mutuo de Privatizacao - FGTS": "PRIVATIZACAO",
+    "Fundo de Investimento Imobiliario":  "FII",
+    "Renda Fixa":                         "RENDA FIXA",
+    "Acoes":                              "ACOES",
+    "Multimercado":                       "MULTIMERCADO",
 }
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: var(--sans); background: var(--bg); color: var(--txt); min-height: 100vh; }
-body::before {
-  content: '';
-  position: fixed; inset: 0; z-index: 0; pointer-events: none;
-  background-image:
-    linear-gradient(rgba(0,212,170,.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0,212,170,.025) 1px, transparent 1px);
-  background-size: 48px 48px;
+
+# ==========================================================
+# SCHEMAS DO CADASTRO CVM POR VERSAO
+# ==========================================================
+# A CVM muda o formato do cad_fi.csv a cada resolucao normativa.
+# Este mapeamento normaliza os nomes de coluna para o codigo usar
+# sempre os mesmos nomes internos.
+
+SCHEMAS = {
+    "v1": {
+        # Formato ate 2022
+        "cnpj":   "CNPJ_FUNDO",
+        "nome":   "DENOM_SOCIAL",
+        "sit":    "SIT",
+        "admin":  "ADMIN",        # texto: nome do administrador
+        "gestor": "GESTOR",       # texto: nome do gestor
+        "classe": "CLASSE",
+        "dt_ini": "DT_INI_ATIV",
+    },
+    "v2": {
+        # Formato 2023-2024 (Resolucao CVM 175 - transicao)
+        "cnpj":   "CNPJ_FUNDO",
+        "nome":   "DENOM_SOCIAL",
+        "sit":    "SIT",
+        "admin":  "ADMIN",
+        "gestor": "GESTOR",
+        "classe": "CLASSE",
+        "dt_ini": "DT_INI_ATIV",
+    },
+    "v3": {
+        # Formato 2025+ (Resolucao CVM 175 - completo)
+        # ADMIN e GESTOR agora sao CNPJs/flags, nao nomes
+        # A busca por "CAIXA" deve ser em DENOM_SOCIAL ou CNPJ_ADMIN
+        "cnpj":   "CNPJ_FUNDO",
+        "nome":   "DENOM_SOCIAL",
+        "sit":    "SIT",
+        "admin":  "CNPJ_ADMIN",   # CNPJ numerico, nao nome
+        "gestor": "PF_PJ_GESTOR", # S ou N, nao nome
+        "classe": "TP_FUNDO",
+        "dt_ini": "DT_REG",
+    },
 }
-.wrap { max-width: 1500px; margin: auto; padding: 0 24px; position: relative; z-index: 1; }
 
-/* HEADER */
-header { padding: 36px 0 28px; border-bottom: 1px solid var(--bdr); margin-bottom: 28px; }
-.hrow { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.brand { display: flex; align-items: center; gap: 14px; }
-.logo { width: 42px; height: 42px; border-radius: 10px; background: linear-gradient(135deg,var(--acc),var(--acc2)); display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
-.brand h1 { font-size: 1.2rem; font-weight: 600; color: #fff; letter-spacing: -.02em; }
-.brand p  { font-size: 11px; color: var(--muted); font-family: var(--mono); margin-top: 2px; }
-.hbadges { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.badge { font-family: var(--mono); font-size: 11px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--bdr2); color: var(--muted); background: var(--sur); white-space: nowrap; }
-.badge.live { border-color: var(--acc); color: var(--acc); }
-.badge.live::before { content:''; display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--acc); margin-right:6px; animation:pulse 2s infinite; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
 
-/* STATUS */
-#status { display:flex; align-items:center; gap:10px; padding:12px 16px; border-radius:10px; border:1px solid var(--bdr); background:var(--sur); font-size:13px; margin-bottom:24px; font-family:var(--mono); color:var(--muted); }
-#status.loading { border-color:var(--acc2); color:var(--acc2); }
-#status.ok      { border-color:var(--acc);  color:var(--acc); }
-#status.error   { border-color:var(--neg);  color:var(--neg); }
-.spin { width:14px; height:14px; border:2px solid currentColor; border-top-color:transparent; border-radius:50%; animation:spin .8s linear infinite; flex-shrink:0; }
-@keyframes spin { to{transform:rotate(360deg)} }
+def detectar_schema(colunas: list) -> dict:
+    cols_upper = [c.upper() for c in colunas]
+    # v3 tem CNPJ_ADMIN E ainda ADMIN (texto) simultaneamente
+    if "CNPJ_ADMIN" in cols_upper and "ADMIN" in cols_upper:
+        versao = "v3-compat (2025+ com ADMIN texto)"
+    elif "ADMIN" in cols_upper and "GESTOR" in cols_upper:
+        versao = "v1/v2 (ate 2024)"
+    else:
+        versao = "v2-parcial"
+    # Sempre usa v1 schema se ADMIN texto existir
+    schema = SCHEMAS["v1"] if "ADMIN" in cols_upper else SCHEMAS["v2"]
+    log(f"   Schema: {versao}")
+    return schema
 
-/* PERIOD SELECTOR */
-.period-bar { display:flex; align-items:center; gap:12px; margin-bottom:24px; flex-wrap:wrap; }
-.period-label { font-size:11px; font-family:var(--mono); text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
-.period-btns { display:flex; gap:6px; flex-wrap:wrap; }
-.pbtn { padding:7px 14px; border-radius:8px; border:1px solid var(--bdr2); background:var(--sur); color:var(--muted); font-family:var(--mono); font-size:11px; cursor:pointer; transition:all .2s; }
-.pbtn:hover { border-color:var(--acc); color:var(--acc); }
-.pbtn.active { border-color:var(--acc); background:rgba(0,212,170,.1); color:var(--acc); }
 
-/* STAT CARDS */
-.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:24px; }
-.card { background:var(--sur); border:1px solid var(--bdr); border-radius:12px; padding:16px 18px; transition:border-color .2s; }
-.card:hover { border-color:var(--bdr2); }
-.card-lbl { font-size:10px; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); font-family:var(--mono); margin-bottom:6px; }
-.card-val { font-size:24px; font-weight:600; color:#fff; }
-.card-val.g { color:var(--acc); }
-.card-val.b { color:var(--acc2); }
-.card-val.w { color:var(--warn); }
+# ==========================================================
+# CLI
+# ==========================================================
+def parse_args():
+    p = argparse.ArgumentParser(description="Robo CVM v3.0 - Catalogo de Fundos Caixa")
+    p.add_argument("--lista",          default=None,
+                   help="Arquivo com CNPJs: JSON (Caixa), CSV ou TXT")
+    p.add_argument("--sem-cache",      action="store_true", dest="sem_cache",
+                   help="Forca redownload de todos os arquivos")
+    p.add_argument("--apenas-abertos", action="store_true", dest="apenas_abertos",
+                   help="Inclui so fundos abertos para captacao")
+    p.add_argument("--saida",          default=".", dest="saida",
+                   help="Pasta de saida (default: pasta atual)")
+    p.add_argument("--filtro-gestor",  default=None, dest="filtro_gestor",
+                   help="Busca por gestor/admin (ex: 'caixa', 'btg', 'xp')")
+    p.add_argument("--modo-cvm",       action="store_true", dest="modo_cvm",
+                   help="Ignora JSON local, busca direto no cadastro CVM")
+    return p.parse_args()
 
-/* SECTION TITLE */
-.stitle { font-size:10px; font-family:var(--mono); text-transform:uppercase; letter-spacing:.1em; color:var(--muted); display:flex; align-items:center; gap:10px; margin-bottom:14px; }
-.stitle::after { content:''; flex:1; height:1px; background:var(--bdr); }
 
-/* CAT CARDS */
-.cats { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px; margin-bottom:24px; }
-.ccard { background:var(--sur); border:1px solid var(--bdr); border-radius:11px; padding:14px; cursor:pointer; transition:all .2s; }
-.ccard:hover,.ccard.on { border-color:var(--acc); background:rgba(0,212,170,.05); }
-.ccard-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
-.cbadge { display:inline-block; padding:2px 8px; border-radius:5px; font-size:10px; font-family:var(--mono); }
-.ccount { font-size:10px; font-family:var(--mono); color:var(--muted); }
-.cbar-w { height:3px; background:var(--bdr2); border-radius:2px; margin-bottom:8px; }
-.cbar   { height:100%; border-radius:2px; background:var(--acc); transition:width .5s; }
-.cstats { display:flex; justify-content:space-between; font-size:10px; font-family:var(--mono); color:var(--muted); }
-.cstats span.pos { color:var(--pos); }
-.cstats span.neg { color:var(--neg); }
+# ==========================================================
+# UTILITARIOS
+# ==========================================================
+def norm_cnpj(c: str) -> str:
+    return re.sub(r"\D", "", str(c)).zfill(14)
 
-/* Category badge colors */
-.rf    { background:rgba(59,130,246,.15); color:#60a5fa; border:1px solid rgba(59,130,246,.3); }
-.ac    { background:rgba(249,115,22,.15); color:#fb923c; border:1px solid rgba(249,115,22,.3); }
-.mm    { background:rgba(168,85,247,.15); color:#c084fc; border:1px solid rgba(168,85,247,.3); }
-.fii   { background:rgba(234,179,8,.15);  color:#fbbf24; border:1px solid rgba(234,179,8,.3); }
-.priv  { background:rgba(0,212,170,.15);  color:#00d4aa; border:1px solid rgba(0,212,170,.3); }
-.oth   { background:rgba(100,116,139,.15);color:#94a3b8; border:1px solid rgba(100,116,139,.3); }
+def fmt_cnpj(c: str) -> str:
+    c = norm_cnpj(c)
+    return f"{c[:2]}.{c[2:5]}.{c[5:8]}/{c[8:12]}-{c[12:14]}"
 
-/* FILTERS */
-.filters { background:var(--sur); border:1px solid var(--bdr); border-radius:12px; padding:16px; margin-bottom:16px; }
-.frow { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-.fsep { width:1px; height:24px; background:var(--bdr2); flex-shrink:0; }
-.search-w { flex:1; min-width:220px; position:relative; }
-.search-ic { position:absolute; left:11px; top:50%; transform:translateY(-50%); color:var(--muted); font-size:13px; pointer-events:none; }
-input[type=text] { width:100%; padding:9px 13px 9px 34px; border-radius:9px; border:1px solid var(--bdr2); background:#020617; color:var(--txt); font-family:var(--sans); font-size:13px; outline:none; transition:border-color .2s; }
-input[type=text]:focus { border-color:var(--acc); }
-input[type=text]::placeholder { color:var(--muted); }
-select { padding:9px 13px; border-radius:9px; border:1px solid var(--bdr2); background:#020617; color:var(--txt); font-family:var(--sans); font-size:13px; outline:none; cursor:pointer; transition:border-color .2s; }
-select:focus { border-color:var(--acc); }
-.rent-filter { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); }
-.rent-filter input[type=number] { width:70px; padding:9px 8px; border-radius:9px; border:1px solid var(--bdr2); background:#020617; color:var(--txt); font-size:13px; outline:none; text-align:center; }
-.rent-filter input[type=number]:focus { border-color:var(--acc); }
-.btn { padding:9px 14px; border-radius:9px; border:1px solid var(--bdr2); background:var(--sur); color:var(--txt); font-family:var(--sans); font-size:12px; cursor:pointer; transition:all .2s; white-space:nowrap; }
-.btn:hover { background:var(--bdr2); color:#fff; }
-.btn.clear { color:var(--neg); border-color:rgba(244,63,94,.3); }
-.btn.clear:hover { background:rgba(244,63,94,.1); }
-.pag-i { font-family:var(--mono); font-size:11px; color:var(--muted); white-space:nowrap; }
+def rm_accent(s: str) -> str:
+    return "".join(ch for ch in unicodedata.normalize("NFD", s)
+                   if unicodedata.category(ch) != "Mn")
 
-/* TABLE */
-.tbl-w { background:var(--sur); border:1px solid var(--bdr); border-radius:12px; overflow:hidden; margin-bottom:24px; overflow-x:auto; }
-table { width:100%; border-collapse:collapse; font-size:12.5px; }
-thead th { background:#080c14; color:var(--muted); text-align:left; padding:10px 13px; font-family:var(--mono); font-size:10px; text-transform:uppercase; letter-spacing:.07em; cursor:pointer; user-select:none; white-space:nowrap; border-bottom:1px solid var(--bdr); transition:color .15s; }
-thead th:hover { color:var(--acc); }
-thead th.asc::after  { content:" ↑"; color:var(--acc); }
-thead th.desc::after { content:" ↓"; color:var(--acc); }
-thead th:not(.asc):not(.desc)::after { content:" ⇅"; opacity:.25; font-size:9px; }
-tbody td { padding:8px 13px; border-bottom:1px solid var(--bdr); vertical-align:middle; white-space:nowrap; }
-tbody tr:last-child td { border-bottom:none; }
-tbody tr:hover td { background:rgba(255,255,255,.02); }
-.pos { color:var(--pos); font-weight:600; font-family:var(--mono); }
-.neg { color:var(--neg); font-weight:600; font-family:var(--mono); }
-.mono { font-family:var(--mono); color:var(--muted); }
-.nome-td { max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+def fmt_br(v, decimais: int = 2) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    try:
+        return f"{float(v):,.{decimais}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except Exception:
+        return ""
 
-/* FOOTER */
-footer { border-top:1px solid var(--bdr); padding:20px 0; display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:20px; }
-footer p { font-size:11px; color:var(--muted); font-family:var(--mono); }
-footer a { color:var(--acc); text-decoration:none; }
-footer a:hover { text-decoration:underline; }
+def retorno_pct(cota_ini, cota_fim) -> Optional[float]:
+    try:
+        if cota_ini and cota_fim and float(cota_ini) > 0:
+            return (float(cota_fim) / float(cota_ini) - 1) * 100
+    except (TypeError, ValueError):
+        pass
+    return None
 
-@media(max-width:640px) {
-  .cards { grid-template-columns:repeat(2,1fr); }
-  .cats  { grid-template-columns:1fr 1fr; }
-  .frow  { flex-direction:column; align-items:stretch; }
-  .fsep  { display:none; }
-}
-</style>
-</head>
-<body>
-<div class="wrap">
+def limpar_aba(nome: str) -> str:
+    r = re.sub(r'[:\\/*?\[\]]', "", str(nome)).strip()[:31]
+    return r if r else "Outros"
 
-<header>
-  <div class="hrow">
-    <div class="brand">
-      <div class="logo">&#x1F4CA;</div>
-      <div>
-        <h1>Catalogo de Fundos Caixa</h1>
-        <p>dados.cvm.gov.br &nbsp;&middot;&nbsp; github.com/eltonprivatebanker/catalogo-fundos-cvm</p>
-      </div>
-    </div>
-    <div class="hbadges">
-      <span class="badge live">Atualizacao automatica</span>
-      <span class="badge" id="badgeData">--/--/----</span>
-      <span class="badge" id="badgePeriodo">Atual</span>
-    </div>
-  </div>
-</header>
+def log(msg: str):
+    print(f"{datetime.now().strftime('%H:%M:%S')}  {msg}")
 
-<!-- STATUS -->
-<div id="status" class="loading">
-  <div class="spin"></div>
-  <span id="statusMsg">Carregando dados...</span>
-</div>
+def refinar_categoria(classe_cvm: str, nome_fundo: str) -> str:
+    nome = rm_accent(str(nome_fundo).upper())
+    if "SIMPLES" in nome:
+        return "RENDA FIXA SIMPLES"
+    if any(x in nome for x in ("REF DI", "REFERENCIADO", "REFERENC")):
+        return "RENDA FIXA REF DI"
+    if "CURTO PRAZO" in nome and "renda" in classe_cvm.lower():
+        return "RENDA FIXA CURTO PRAZO"
+    if "DEBENTURE" in nome or "DEB INCENT" in nome:
+        return "RENDA FIXA DEBENTURES"
+    if "CREDITO" in nome or "CRED PRIV" in nome:
+        return "RENDA FIXA CRED PRIV"
+    if "FGTS" in nome or "PRIVATIZ" in nome:
+        return "PRIVATIZACAO"
+    if "IMOB" in nome or " FII" in nome:
+        return "FII"
+    return CLASSE_MAP.get(classe_cvm, rm_accent(classe_cvm.upper()) if classe_cvm else "OUTROS")
 
-<!-- PERIOD SELECTOR -->
-<div class="period-bar">
-  <span class="period-label">Periodo:</span>
-  <div class="period-btns" id="periodBtns"></div>
-</div>
 
-<!-- STAT CARDS -->
-<div class="cards">
-  <div class="card"><div class="card-lbl">Total de Fundos</div><div class="card-val"    id="cTotal">--</div></div>
-  <div class="card"><div class="card-lbl">Com Cota Atual</div><div class="card-val g"   id="cCota">--</div></div>
-  <div class="card"><div class="card-lbl">Com Acum. 12M</div><div class="card-val b"   id="c12m">--</div></div>
-  <div class="card"><div class="card-lbl">Sem Dados CVM</div><div class="card-val w"   id="cSem">--</div></div>
-  <div class="card"><div class="card-lbl">Categorias</div><div class="card-val"         id="cCats">--</div></div>
-</div>
+# ==========================================================
+# DOWNLOAD COM CACHE E RETRY
+# ==========================================================
+def _cache_path(url: str) -> str:
+    nome = re.sub(r"[^\w.]", "_", url.split("/")[-1])
+    return os.path.join(CACHE_DIR, nome)
 
-<!-- CATEGORY CARDS -->
-<p class="stitle">Por Categoria <span id="catHint" style="font-size:10px;font-weight:400;text-transform:none;letter-spacing:0">(clique para filtrar)</span></p>
-<div class="cats" id="catGrid"></div>
+def baixar_bytes(url: str, label: str = "", sem_cache: bool = False) -> Optional[bytes]:
+    cache = _cache_path(url)
+    if not sem_cache and os.path.exists(cache):
+        log(f"[cache] {label or os.path.basename(cache)}")
+        with open(cache, "rb") as f:
+            return f.read()
+    # Esperas progressivas: 10s, 30s, 60s entre tentativas
+    esperas = [10, 30, 60]
+    for tentativa in range(MAX_RETRY):
+        try:
+            log(f"[download] {label or url} (tentativa {tentativa+1}/{MAX_RETRY})")
+            r = requests.get(url, timeout=TIMEOUT, headers={"User-Agent": "Mozilla/5.0"})
+            r.raise_for_status()
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            with open(cache, "wb") as f:
+                f.write(r.content)
+            log(f"[OK] Salvo ({len(r.content)/1e6:.1f} MB)")
+            return r.content
+        except Exception as e:
+            if tentativa == MAX_RETRY - 1:
+                log(f"[ERRO] Falhou apos {MAX_RETRY} tentativas: {e}")
+                return None
+            espera = esperas[tentativa]
+            log(f"[AVISO] Tentativa {tentativa+1} falhou ({e}). Aguardando {espera}s...")
+            time.sleep(espera)
+    return None
 
-<!-- FILTERS -->
-<p class="stitle">Todos os Fundos</p>
-<div class="filters">
-  <div class="frow">
-    <div class="search-w">
-      <span class="search-ic">&#x1F50D;</span>
-      <input type="text" id="busca" placeholder="Buscar por nome, CNPJ, categoria..." oninput="filtrar()">
-    </div>
-    <div class="fsep"></div>
-    <select id="fCat"    onchange="filtrar()"><option value="">Todas as categorias</option></select>
-    <select id="fAberto" onchange="filtrar()">
-      <option value="">Aberto / Fechado</option>
-      <option value="Sim">Aberto para captacao</option>
-      <option value="Nao">Fechado</option>
-    </select>
-    <div class="fsep"></div>
-    <div class="rent-filter">
-      <span>Rent. 12M min:</span>
-      <input type="number" id="fMinRent" placeholder="%" step="1" oninput="filtrar()">
-      <span>%</span>
-    </div>
-    <div class="fsep"></div>
-    <button class="btn" onclick="mudarPag(-1)">&#8592; Ant.</button>
-    <span class="pag-i" id="pagInfo">--</span>
-    <button class="btn" onclick="mudarPag(1)">Prox. &#8594;</button>
-    <div class="fsep"></div>
-    <button class="btn clear" onclick="limparFiltros()">&#10005; Limpar</button>
-  </div>
-</div>
+def baixar_csv_bytes(conteudo: bytes) -> pd.DataFrame:
+    for enc in ("latin1", "utf-8-sig", "utf-8"):
+        try:
+            return pd.read_csv(
+                io.StringIO(conteudo.decode(enc)),
+                sep=";", low_memory=False, dtype=str
+            )
+        except Exception:
+            continue
+    return pd.DataFrame()
 
-<!-- TABLE -->
-<div class="tbl-w">
-  <table><thead id="thead"></thead><tbody id="tbody"></tbody></table>
-</div>
+def baixar_zip_inf(ano: int, mes: int, sem_cache: bool = False) -> pd.DataFrame:
+    yyyymm = f"{ano}{mes:02d}"
+    url    = URL_INF_MES.format(yyyymm=yyyymm)
+    dados  = baixar_bytes(url, f"informe {yyyymm}", sem_cache)
+    if dados is None:
+        return pd.DataFrame()
+    try:
+        with zipfile.ZipFile(BytesIO(dados)) as zf:
+            csvs = [n for n in zf.namelist() if n.lower().endswith(".csv")]
+            if not csvs:
+                return pd.DataFrame()
+            with zf.open(csvs[0]) as f:
+                return pd.read_csv(f, sep=";", encoding="latin1",
+                                   low_memory=False, dtype=str)
+    except Exception as e:
+        log(f"[ERRO] ZIP {yyyymm}: {e}")
+        return pd.DataFrame()
 
-<footer>
-  <p>Fonte: <a href="https://dados.cvm.gov.br" target="_blank">CVM Dados Abertos</a> &middot; Rentabilidade por variacao de cota &middot; <a href="https://github.com/eltonprivatebanker/catalogo-fundos-cvm" target="_blank">Ver codigo</a></p>
-  <p>Atualizado automaticamente de segunda a sexta</p>
-</footer>
 
-</div><!-- /wrap -->
+# ==========================================================
+# LEITURA DA LISTA DE CNPJs
+# ==========================================================
+def _autodetectar_lista() -> Optional[str]:
+    for ext in ("*.json", "*.csv", "*.txt"):
+        arquivos = sorted(glob.glob(ext))
+        arquivos = [a for a in arquivos if not any(
+            x in a.lower() for x in
+            ("dados_atuais", "sipii_caixa", "cnpjs_lista", "requirements", "periodos")
+        )]
+        if arquivos:
+            log(f"[arquivo] Detectado: {arquivos[0]}")
+            return arquivos[0]
+    return None
 
-<script>
-// ============================================================
-// CONFIG
-// ============================================================
-var CSV_ATUAL   = 'saida/dados_atuais.csv';
-var PERIODOS_JS = 'saida/periodos.json';
-var POR_PAG     = 50;
+def ler_lista_cnpjs(caminho: str) -> tuple:
+    ext = os.path.splitext(caminho)[1].lower()
+    log(f"Lendo lista: {caminho}")
+    if ext == ".json":
+        with open(caminho, encoding="utf-8") as f:
+            dados = json.load(f)
+        if isinstance(dados, dict):
+            dados = next(iter(dados.values()))
+        df = pd.json_normalize(dados)
+        col = next((c for c in df.columns if "cnpj" in c.lower()), None)
+        if col is None:
+            raise ValueError("Coluna CNPJ nao encontrada no JSON.")
+        df["_CNPJ_NORM"] = df[col].apply(norm_cnpj)
+        log(f"   [OK] {len(df)} fundos (coluna '{col}')")
+        return df["_CNPJ_NORM"].tolist(), df
+    elif ext == ".csv":
+        for sep in (";", ",", "\t"):
+            try:
+                df = pd.read_csv(caminho, sep=sep, dtype=str, encoding="utf-8-sig")
+                if len(df.columns) > 1:
+                    break
+            except Exception:
+                continue
+        col = next((c for c in df.columns if "cnpj" in c.lower()), df.columns[0])
+        df["_CNPJ_NORM"] = df[col].apply(norm_cnpj)
+        log(f"   [OK] {len(df)} CNPJs no CSV")
+        return df["_CNPJ_NORM"].tolist(), df
+    else:
+        with open(caminho, encoding="utf-8") as f:
+            linhas = [l.strip() for l in f if l.strip()]
+        cnpjs = [norm_cnpj(l) for l in linhas]
+        log(f"   [OK] {len(cnpjs)} CNPJs no TXT")
+        return cnpjs, None
 
-// ============================================================
-// STATE
-// ============================================================
-var allRows = [], filtered = [], columns = [], pag = 0;
-var sortIdx = -1, sortAsc = true;
-var catAtiva = '';
 
-// ============================================================
-// INIT — carrega lista de periodos, depois o CSV
-// ============================================================
-document.addEventListener('DOMContentLoaded', function() {
-  fetch(PERIODOS_JS + '?t=' + Date.now())
-    .then(function(r) { return r.ok ? r.json() : []; })
-    .then(function(periodos) {
-      buildPeriodBtns(periodos);
-      // Carrega o primeiro (atual)
-      var primeiro = periodos.length ? periodos[0].file : CSV_ATUAL;
-      carregarCSV(primeiro, periodos.length ? periodos[0].label : 'Atual');
+# ==========================================================
+# CADASTRO CVM - COM DETECCAO DE SCHEMA
+# ==========================================================
+def carregar_cadastro(sem_cache: bool = False,
+                      filtro_gestor: Optional[str] = None) -> pd.DataFrame:
+    """
+    Baixa o cadastro CVM e filtra pelos fundos da Caixa (ou outro gestor).
+    Detecta automaticamente o formato do arquivo (v1/v2/v3).
+    """
+    log("[1/4] Cadastro CVM nacional")
+    dados = baixar_bytes(URL_CAD, "cad_fi.csv", sem_cache)
+    if dados is None:
+        return pd.DataFrame()
+
+    df = baixar_csv_bytes(dados)
+    df.columns = df.columns.str.strip()
+    log(f"   Total no cadastro: {len(df)} fundos")
+    log(f"   Colunas: {list(df.columns)}")
+
+    # Detecta schema e normaliza nomes de colunas
+    schema = detectar_schema(list(df.columns))
+    rename = {}
+    for interno, externo in schema.items():
+        if externo in df.columns and externo != interno.upper():
+            rename[externo] = interno.upper()
+    # Garante nomes padrao internos
+    col_map = {}
+    for interno, externo in schema.items():
+        src = rename.get(externo, externo)
+        col_map[interno] = src if src in df.columns else None
+
+    log(f"   Mapeamento: {col_map}")
+
+    # CNPJ normalizado
+    col_cnpj = col_map.get("cnpj") or next(
+        (c for c in df.columns if "cnpj" in c.lower() and "fundo" in c.lower()), None
+    )
+    if col_cnpj is None:
+        log("[ERRO] Coluna CNPJ nao encontrada!")
+        return pd.DataFrame()
+    df["_CNPJ_NORM"] = df[col_cnpj].apply(norm_cnpj)
+
+    # Padroniza colunas essenciais
+    for interno, externo in schema.items():
+        dst = interno.upper()
+        if externo in df.columns and dst not in df.columns:
+            df[dst] = df[externo]
+
+    termo = (filtro_gestor or "CAIXA").upper()
+
+    # -- Estrategia 1: busca por nome (DENOM_SOCIAL) ------
+    mask = pd.Series([False] * len(df), index=df.index)
+
+    if "DENOM_SOCIAL" in df.columns:
+        mask |= df["DENOM_SOCIAL"].fillna("").str.upper().str.contains(termo, regex=False)
+        log(f"   Por DENOM_SOCIAL ('{termo}'): {mask.sum()} fundos")
+
+    # Busca em colunas de texto adicionais (formato antigo: ADMIN, GESTOR)
+    for col in ("ADMIN", "GESTOR"):
+        if col in df.columns and df[col].dtype == object:
+            mask |= df[col].fillna("").str.upper().str.contains(termo, regex=False)
+            log(f"   Por {col}: {mask.sum()} fundos acumulados")
+
+    # -- Estrategia 2: busca por CNPJ do administrador ---
+    # (formato v3: CNPJ_ADMIN contem o CNPJ da instituicao)
+    if mask.sum() == 0 or schema == SCHEMAS["v3"]:
+        for cnpj_base in CAIXA_CNPJS:
+            for col in df.columns:
+                if "cnpj" in col.lower() and "fundo" not in col.lower():
+                    extra = df[col].fillna("").apply(
+                        lambda x: re.sub(r"\D", "", str(x)).startswith(cnpj_base)
+                    )
+                    mask |= extra
+        log(f"   Por CNPJ admin (Caixa): {mask.sum()} fundos acumulados")
+
+    # Log das situacoes encontradas (sem filtrar - fundos cancelados aparecerao sem cota)
+    if "SIT" in df.columns:
+        vals_sit = df["SIT"].dropna().unique()
+        log(f"   Valores em SIT: {list(vals_sit)}")
+        # Distribuicao dos fundos Caixa por situacao:
+        if mask.sum() > 0:
+            sit_caixa = df[mask]["SIT"].value_counts()
+            log(f"   Situacao dos fundos Caixa: {sit_caixa.to_dict()}")
+
+    df_out = df[mask].copy()
+    log(f"   [OK] {len(df_out)} fundos Caixa encontrados")
+
+    if df_out.empty:
+        log("[AVISO] Nenhum fundo encontrado! Verifique o formato do cadastro.")
+        log(f"   Todas as colunas: {list(df.columns)}")
+        amostra = df["DENOM_SOCIAL"].dropna().unique()[:5].tolist() if "DENOM_SOCIAL" in df.columns else []
+        log(f"   Amostra DENOM_SOCIAL: {amostra}")
+
+    return df_out
+
+
+# ==========================================================
+# INFORME DIARIO
+# ==========================================================
+def preparar_inf(df_raw: pd.DataFrame, cnpjs: set) -> pd.DataFrame:
+    if df_raw.empty:
+        return pd.DataFrame()
+    col_cnpj = next((c for c in df_raw.columns if "cnpj" in c.lower()), None)
+    if col_cnpj is None:
+        return pd.DataFrame()
+    df_raw = df_raw.copy()
+    df_raw["_CNPJ_NORM"] = df_raw[col_cnpj].apply(norm_cnpj)
+    df = df_raw[df_raw["_CNPJ_NORM"].isin(cnpjs)].copy()
+    # Normaliza colunas
+    for kw, dst in [("quota|cota", "VL_QUOTA"), ("patrim", "VL_PATRIM_LIQ"),
+                    ("dt_comptc|dt_refer", "DT_COMPTC"), ("nr_cotst", "NR_COTST")]:
+        col = next((c for c in df.columns if re.search(kw, c.lower())), None)
+        if col and dst not in df.columns:
+            df[dst] = df[col]
+    if "DT_COMPTC" in df.columns:
+        df["DT_COMPTC"] = pd.to_datetime(df["DT_COMPTC"], errors="coerce")
+    if "VL_QUOTA" in df.columns:
+        df["VL_QUOTA"] = pd.to_numeric(df["VL_QUOTA"], errors="coerce")
+    if "VL_PATRIM_LIQ" in df.columns:
+        df["VL_PATRIM_LIQ"] = pd.to_numeric(df["VL_PATRIM_LIQ"], errors="coerce")
+    return df.sort_values(["_CNPJ_NORM", "DT_COMPTC"])
+
+
+# ==========================================================
+# DATAS
+# ==========================================================
+def mes_anterior(ano: int, mes: int) -> tuple:
+    return (ano - 1, 12) if mes == 1 else (ano, mes - 1)
+
+
+# ==========================================================
+# CALCULO DE INDICADORES
+# ==========================================================
+def calcular_indicadores(cnpj, nome, cat, dt_ini,
+                         df_recente, df_dez, df_12m,
+                         hoje, extras) -> dict:
+    d = df_recente[df_recente["_CNPJ_NORM"] == cnpj] if not df_recente.empty else pd.DataFrame()
+
+    base = {
+        "Categoria":            cat,
+        "Fundo":                nome,
+        "CNPJ":                 fmt_cnpj(cnpj),
+        "Data Inicio":          dt_ini,
+        "Cota (R$)":            "",
+        "Variacao Dia (%)":     "",
+        "Acum. Mes (%)":        "",
+        "Acum. Ano (%)":        "",
+        "Acum. 12M (%)":        "",
+        "PL (mi R$)":           "",
+        "PL Medio 30d (mi R$)": "",
+        "Taxa Adm %":           extras.get("taxa_adm", ""),
+        "Aberto":               extras.get("aberto", ""),
+        "Aplic. Min (R$)":      extras.get("aplic_min", ""),
+        "Benchmark":            extras.get("benchmark", ""),
+        "Resgate Conv.":        extras.get("resgate_conv", ""),
+        "Resgate Pgto":         extras.get("resgate_pgto", ""),
+        "% CDI Ano":            extras.get("pct_cdi_ano", ""),
+        "% CDI 12m":            extras.get("pct_cdi_12m", ""),
+    }
+
+    if d.empty or "VL_QUOTA" not in d.columns:
+        return base
+    d = d.dropna(subset=["VL_QUOTA"])
+    if d.empty:
+        return base
+
+    ultima     = d.iloc[-1]
+    cota_atual = ultima["VL_QUOTA"]
+    pl_atual   = (ultima["VL_PATRIM_LIQ"] / 1e6
+                  if "VL_PATRIM_LIQ" in d.columns and pd.notna(ultima.get("VL_PATRIM_LIQ"))
+                  else None)
+    pl_medio   = (d["VL_PATRIM_LIQ"].tail(30).mean() / 1e6
+                  if "VL_PATRIM_LIQ" in d.columns else None)
+
+    var_dia = retorno_pct(d.iloc[-2]["VL_QUOTA"], cota_atual) if len(d) >= 2 else None
+
+    d_mes    = d[d["DT_COMPTC"].dt.month == hoje.month] if "DT_COMPTC" in d.columns else pd.DataFrame()
+    acum_mes = retorno_pct(d_mes.iloc[0]["VL_QUOTA"] if not d_mes.empty else None, cota_atual)
+
+    d_dez_f  = df_dez[df_dez["_CNPJ_NORM"] == cnpj].dropna(subset=["VL_QUOTA"]) if not df_dez.empty else pd.DataFrame()
+    acum_ano = retorno_pct(d_dez_f.iloc[-1]["VL_QUOTA"] if not d_dez_f.empty else None, cota_atual)
+
+    d_12m_f  = df_12m[df_12m["_CNPJ_NORM"] == cnpj].dropna(subset=["VL_QUOTA"]) if not df_12m.empty else pd.DataFrame()
+    acum_12m = retorno_pct(d_12m_f.iloc[-1]["VL_QUOTA"] if not d_12m_f.empty else None, cota_atual)
+
+    base.update({
+        "Cota (R$)":            fmt_br(cota_atual, 8),
+        "Variacao Dia (%)":     fmt_br(var_dia, 3),
+        "Acum. Mes (%)":        fmt_br(acum_mes, 2),
+        "Acum. Ano (%)":        fmt_br(acum_ano, 2),
+        "Acum. 12M (%)":        fmt_br(acum_12m, 2),
+        "PL (mi R$)":           fmt_br(pl_atual, 3),
+        "PL Medio 30d (mi R$)": fmt_br(pl_medio, 3),
     })
-    .catch(function() {
-      // Sem periodos.json: carrega so o atual
-      buildPeriodBtns([{label:'Atual', file:CSV_ATUAL}]);
-      carregarCSV(CSV_ATUAL, 'Atual');
-    });
-});
+    return base
 
-// ============================================================
-// PERIOD BUTTONS
-// ============================================================
-function buildPeriodBtns(periodos) {
-  var wrap = document.getElementById('periodBtns');
-  wrap.innerHTML = '';
-  periodos.slice(0, 12).forEach(function(p, i) {
-    var btn = document.createElement('button');
-    btn.className = 'pbtn' + (i === 0 ? ' active' : '');
-    btn.textContent = p.label;
-    btn.onclick = function() {
-      document.querySelectorAll('.pbtn').forEach(function(b) { b.classList.remove('active'); });
-      btn.classList.add('active');
-      document.getElementById('badgePeriodo').textContent = p.label;
-      carregarCSV(p.file, p.label);
-    };
-    wrap.appendChild(btn);
-  });
-}
 
-// ============================================================
-// CSV LOADER
-// ============================================================
-function carregarCSV(url, label) {
-  setStatus('loading', 'Carregando ' + (label || url) + '...');
-  allRows = []; filtered = []; columns = [];
-  pag = 0; sortIdx = -1;
-  document.getElementById('tbody').innerHTML = '';
-  document.getElementById('thead').innerHTML = '';
+# ==========================================================
+# EXTRACAO PRINCIPAL
+# ==========================================================
+def extrair(args) -> pd.DataFrame:
+    hoje    = date.today()
+    sem_cac = args.sem_cache
 
-  fetch(url + '?t=' + Date.now())
-    .then(function(r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status + ' - ' + url);
-      return r.text();
-    })
-    .then(function(txt) {
-      var p = parseCSV(txt);
-      columns = p.headers;
-      allRows = p.rows;
-      onDataLoaded(label);
-    })
-    .catch(function(e) {
-      setStatus('error', 'Erro: ' + e.message);
-    });
-}
+    print(f"\n{'='*60}")
+    print(f"  ROBO CVM v3.0 - {hoje.strftime('%d/%m/%Y')}")
+    print(f"{'='*60}")
 
-// ============================================================
-// CSV PARSER (suporta ; e ,)
-// ============================================================
-function parseCSV(text) {
-  var SEP = (text.indexOf(';') !== -1) ? ';' : ',';
-  var lines = text.trim().split(/\r?\n/);
-  var headers = lines[0].split(SEP).map(function(h) {
-    return h.trim().replace(/^"|"$/g, '');
-  });
-  var rows = [];
-  for (var i = 1; i < lines.length; i++) {
-    if (!lines[i].trim()) continue;
-    var cells = [], cell = '', inQ = false;
-    for (var c = 0; c < lines[i].length; c++) {
-      var ch = lines[i][c];
-      if (ch === '"') { inQ = !inQ; }
-      else if (ch === SEP && !inQ) { cells.push(cell.trim()); cell = ''; }
-      else { cell += ch; }
-    }
-    cells.push(cell.trim());
-    if (cells.length < 2) continue;
-    var row = {};
-    for (var j = 0; j < headers.length; j++) {
-      row[headers[j]] = (cells[j] || '').replace(/^"|"$/g, '');
-    }
-    rows.push(row);
-  }
-  return { headers: headers, rows: rows };
-}
+    # -- Fonte dos CNPJs -----------------------------------
+    df_extra   = None
+    cnpjs_json = None
+    caminho    = args.lista
 
-// ============================================================
-// PARSE NUMBER (formato BR: 1.234,56)
-// ============================================================
-function parseNum(v) {
-  if (!v || v === '--' || v === '') return null;
-  var n = parseFloat(String(v).replace(/\./g, '').replace(',', '.'));
-  return isNaN(n) ? null : n;
-}
+    if caminho is None and not getattr(args, "modo_cvm", False):
+        caminho = _autodetectar_lista()
 
-// ============================================================
-// ON DATA LOADED
-// ============================================================
-function onDataLoaded(label) {
-  var hoje = new Date();
-  document.getElementById('badgeData').textContent = hoje.toLocaleDateString('pt-BR');
+    if caminho and os.path.exists(caminho):
+        cnpjs_lista, df_extra = ler_lista_cnpjs(caminho)
+        cnpjs_set = set(cnpjs_lista)
+        if df_extra is not None and "_CNPJ_NORM" in df_extra.columns:
+            cnpjs_json = df_extra.set_index("_CNPJ_NORM")
+    else:
+        cnpjs_set = None
 
-  // Filter visible columns
-  columns = columns.filter(function(c) {
-    return c !== 'CNPJ' && allRows.some(function(r) { return r[c] && r[c] !== ''; });
-  });
+    # -- Cadastro CVM --------------------------------------
+    df_cad = carregar_cadastro(sem_cac, args.filtro_gestor)
+    if df_cad.empty:
+        print("[ERRO] Cadastro vazio. Abortando.")
+        return pd.DataFrame()
 
-  // Stats
-  var total   = allRows.length;
-  var comCota = allRows.filter(function(r) { return r['Cota (R$)'] && r['Cota (R$)'] !== ''; }).length;
-  var com12m  = allRows.filter(function(r) { return r['Acum. 12M (%)'] && r['Acum. 12M (%)'] !== ''; }).length;
-  var cats    = new Set(allRows.map(function(r) { return r['Categoria']; })).size;
+    if cnpjs_set is None:
+        cnpjs_set = set(df_cad["_CNPJ_NORM"].unique())
 
-  document.getElementById('cTotal').textContent = total.toLocaleString('pt-BR');
-  document.getElementById('cCota').textContent  = comCota.toLocaleString('pt-BR');
-  document.getElementById('c12m').textContent   = com12m.toLocaleString('pt-BR');
-  document.getElementById('cSem').textContent   = (total - comCota);
-  document.getElementById('cCats').textContent  = cats;
+    df_cad_f = df_cad[df_cad["_CNPJ_NORM"].isin(cnpjs_set)].copy()
+    log(f"   {len(df_cad_f)} fundos no cadastro para processar")
 
-  // Category filter dropdown
-  var sel = document.getElementById('fCat');
-  sel.innerHTML = '<option value="">Todas as categorias</option>';
-  Array.from(new Set(allRows.map(function(r) { return r['Categoria']; }))).sort().forEach(function(c) {
-    if (!c || c === 'undefined') return;
-    var o = document.createElement('option');
-    o.value = c; o.textContent = c; sel.appendChild(o);
-  });
+    # -- Downloads de cotas --------------------------------
+    ano_ant, mes_ant = mes_anterior(hoje.year, hoje.month)
+    ano_12m, mes_12m = hoje.year - 1, hoje.month
 
-  // Table header
-  document.getElementById('thead').innerHTML =
-    '<tr>' + columns.map(function(c, i) {
-      return '<th onclick="sortBy(' + i + ')">' + c + '</th>';
-    }).join('') + '</tr>';
+    log(f"\n[2/4] Cotas {hoje.year}{hoje.month:02d} + {ano_ant}{mes_ant:02d}")
+    df_atual   = preparar_inf(baixar_zip_inf(hoje.year, hoje.month, sem_cac), cnpjs_set)
+    df_ant     = preparar_inf(baixar_zip_inf(ano_ant, mes_ant, sem_cac), cnpjs_set)
+    df_recente = pd.concat([df_ant, df_atual], ignore_index=True)
+    log(f"   Linhas carregadas: {len(df_recente)}")
 
-  buildCatCards();
-  setStatus('ok', 'Carregado: ' + total + ' fundos | ' + (label || 'Atual'));
-  catAtiva = '';
-  filtrar();
-}
+    log(f"\n[3/4] Dez/{hoje.year-1} (Acum. Ano)")
+    df_dez = preparar_inf(baixar_zip_inf(hoje.year - 1, 12, sem_cac), cnpjs_set)
 
-// ============================================================
-// CATEGORY CARDS
-// ============================================================
-function catCls(cat) {
-  cat = (cat || '').toUpperCase();
-  if (cat.includes('ACOES') || cat.includes('ACAO')) return 'ac';
-  if (cat.includes('MULTI'))                          return 'mm';
-  if (cat.includes('FII')  || cat.includes('IMOB'))  return 'fii';
-  if (cat.includes('PRIVAT'))                        return 'priv';
-  if (cat.includes('RENDA') || cat.startsWith('RF')) return 'rf';
-  return 'oth';
-}
+    log(f"\n[4/4] {ano_12m}{mes_12m:02d} (Acum. 12M)")
+    df_12m = preparar_inf(baixar_zip_inf(ano_12m, mes_12m, sem_cac), cnpjs_set)
 
-function buildCatCards() {
-  var rentCol = 'Acum. 12M (%)';
-  var catMap  = {};
-  allRows.forEach(function(r) {
-    var c = r['Categoria'] || 'OUTROS';
-    if (!catMap[c]) catMap[c] = { count:0, vals:[] };
-    catMap[c].count++;
-    var v = parseNum(r[rentCol]);
-    if (v !== null) catMap[c].vals.push(v);
-  });
-  var max   = Math.max.apply(null, Object.values(catMap).map(function(x) { return x.count; }));
-  var grid  = document.getElementById('catGrid');
-  grid.innerHTML = '';
-  Object.keys(catMap).sort().forEach(function(cat) {
-    var d  = catMap[cat];
-    var med   = d.vals.length ? d.vals.reduce(function(a,b){return a+b;},0)/d.vals.length : null;
-    var best  = d.vals.length ? Math.max.apply(null,d.vals) : null;
-    var worst = d.vals.length ? Math.min.apply(null,d.vals) : null;
-    var cc = document.createElement('div');
-    cc.className = 'ccard' + (cat === catAtiva ? ' on' : '');
-    cc.onclick = function() { toggleCat(cat); };
-    var medTxt  = med  !== null ? ((med>=0?'+':'')+med.toFixed(1)+'%')  : '--';
-    var bestTxt = best !== null ? ('+'+best.toFixed(1)+'%') : '--';
-    var medCls  = med !== null ? (med >= 0 ? 'pos' : 'neg') : '';
-    cc.innerHTML =
-      '<div class="ccard-top">' +
-        '<span class="cbadge ' + catCls(cat) + '">' + cat + '</span>' +
-        '<span class="ccount">' + d.count + ' fundos</span>' +
-      '</div>' +
-      '<div class="cbar-w"><div class="cbar" style="width:' + Math.round(d.count/max*100) + '%"></div></div>' +
-      '<div class="cstats">' +
-        '<span>Media 12M: <span class="' + medCls + '">' + medTxt + '</span></span>' +
-        '<span>Melhor: <span class="pos">' + bestTxt + '</span></span>' +
-      '</div>';
-    grid.appendChild(cc);
-  });
-}
+    # -- Calcula indicadores -------------------------------
+    log("\n[calc] Calculando indicadores...")
+    cad_idx = df_cad_f.set_index("_CNPJ_NORM") if not df_cad_f.empty else pd.DataFrame()
+    resultados = []
 
-function toggleCat(cat) {
-  catAtiva = (catAtiva === cat) ? '' : cat;
-  document.getElementById('fCat').value = catAtiva;
-  document.querySelectorAll('.ccard').forEach(function(el) {
-    var badge = el.querySelector('.cbadge');
-    el.classList.toggle('on', badge && badge.textContent === catAtiva);
-  });
-  filtrar();
-}
+    for cnpj in cnpjs_set:
+        # Dados do cadastro
+        if not cad_idx.empty and cnpj in cad_idx.index:
+            row = cad_idx.loc[cnpj]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[0]
+            nome   = str(row.get("DENOM_SOCIAL", row.get("NOME", ""))).strip()
+            classe = str(row.get("CLASSE", row.get("TP_FUNDO", "")))
+            dt_ini = str(row.get("DT_INI_ATIV", row.get("DT_REG", "")))
+            cat    = refinar_categoria(classe, nome)
+        elif cnpjs_json is not None and cnpj in cnpjs_json.index:
+            row_j  = cnpjs_json.loc[cnpj]
+            if isinstance(row_j, pd.DataFrame):
+                row_j = row_j.iloc[0]
+            nome   = str(row_j.get("no_fundo", cnpj)).strip()
+            classe = str(row_j.get("no_classificacao_cvm", ""))
+            dt_ini = str(row_j.get("dt_inicial", ""))
+            cat    = refinar_categoria(classe, nome)
+        else:
+            nome, classe, dt_ini, cat = cnpj, "", "", "OUTROS"
 
-// ============================================================
-// FILTER
-// ============================================================
-function filtrar() {
-  var termo   = document.getElementById('busca').value.toLowerCase();
-  var cat     = document.getElementById('fCat').value;
-  var aberto  = document.getElementById('fAberto').value;
-  var minRent = parseFloat(document.getElementById('fMinRent').value);
-  var rentCol = 'Acum. 12M (%)';
+        # Extras do JSON Caixa
+        extras = {}
+        if cnpjs_json is not None and cnpj in cnpjs_json.index:
+            row_j = cnpjs_json.loc[cnpj]
+            if isinstance(row_j, pd.DataFrame):
+                row_j = row_j.iloc[0]
+            extras = {
+                "taxa_adm":     fmt_br(row_j.get("pc_taxa_adm_cliente"), 2),
+                "aberto":       "Sim" if row_j.get("ic_aberto_captacao") else "Nao",
+                "aplic_min":    fmt_br(row_j.get("vr_aplicacao_inicial"), 2),
+                "benchmark":    str(row_j.get("no_benchmark", "")),
+                "resgate_conv": str(row_j.get("de_conversao_resgate", "")),
+                "resgate_pgto": str(row_j.get("de_pagamento_resgate", "")),
+                "pct_cdi_ano":  fmt_br(row_j.get("pc_rentabilidade_cdi_ano"), 2),
+                "pct_cdi_12m":  fmt_br(row_j.get("pc_rentabilidade_cdi_12m"), 2),
+            }
 
-  filtered = allRows.filter(function(r) {
-    if (termo && !Object.values(r).join(' ').toLowerCase().includes(termo)) return false;
-    if (cat && r['Categoria'] !== cat) return false;
-    if (aberto && r['Aberto'] !== aberto && r['Aberto Captacao'] !== aberto) return false;
-    if (!isNaN(minRent)) {
-      var v = parseNum(r[rentCol]);
-      if (v === null || v < minRent) return false;
-    }
-    return true;
-  });
+        if args.apenas_abertos and extras.get("aberto") == "Nao":
+            continue
 
-  pag = 0;
-  renderTable();
-}
+        resultados.append(calcular_indicadores(
+            cnpj, nome, cat, dt_ini,
+            df_recente, df_dez, df_12m, hoje, extras,
+        ))
 
-function limparFiltros() {
-  document.getElementById('busca').value    = '';
-  document.getElementById('fCat').value     = '';
-  document.getElementById('fAberto').value  = '';
-  document.getElementById('fMinRent').value = '';
-  catAtiva = '';
-  document.querySelectorAll('.ccard').forEach(function(el) { el.classList.remove('on'); });
-  filtrar();
-}
+    df_out = pd.DataFrame(resultados)
+    if not df_out.empty:
+        df_out = df_out.sort_values(["Categoria", "Fundo"])
+    log(f"   [OK] {len(df_out)} fundos processados")
+    return df_out
 
-// ============================================================
-// RENDER TABLE
-// ============================================================
-var PCT_COLS = new Set(['Variacao Dia (%)','Acum. Mes (%)','Acum. Ano (%)','Acum. 12M (%)',
-                        'Taxa Adm %','% CDI Ano','% CDI 12m']);
-var MONO_COLS = new Set(['Cota (R$)','PL (mi R$)','PL Medio 30d (mi R$)','Aplic. Min (R$)',
-                         'Data Inicio','CNPJ']);
 
-function renderTable() {
-  var total    = filtered.length;
-  var totPag   = Math.max(1, Math.ceil(total / POR_PAG));
-  if (pag >= totPag) pag = totPag - 1;
-  var slice    = filtered.slice(pag * POR_PAG, (pag + 1) * POR_PAG);
+# ==========================================================
+# SALVAMENTO
+# ==========================================================
+def validar(df: pd.DataFrame):
+    total    = len(df)
+    com_cota = df["Cota (R$)"].ne("").sum()
+    com_12m  = df["Acum. 12M (%)"].ne("").sum()
+    print(f"\n{'-'*50}")
+    print(f"[stats] Total: {total}  |  Com cota: {com_cota}  |  Com 12M: {com_12m}")
+    for cat, grp in df.groupby("Categoria"):
+        print(f"   {cat:<35}: {len(grp):>3} fundos")
+    print(f"{'-'*50}")
 
-  document.getElementById('pagInfo').textContent =
-    'Pag ' + (pag+1) + '/' + totPag + ' \u00b7 ' + total.toLocaleString('pt-BR') + ' fundos';
 
-  var html = slice.map(function(row) {
-    return '<tr>' + columns.map(function(col) {
-      var v = row[col] || '';
-      if (!v) return '<td style="color:var(--muted)">-</td>';
-      if (col === 'Categoria') {
-        return '<td><span class="cbadge ' + catCls(v) + '">' + v + '</span></td>';
-      }
-      if (col === 'Fundo') {
-        return '<td class="nome-td" title="' + v.replace(/"/g,"'") + '">' + v + '</td>';
-      }
-      if (PCT_COLS.has(col)) {
-        var n = parseNum(v);
-        if (n !== null) {
-          return '<td class="' + (n >= 0 ? 'pos' : 'neg') + '">' + v + '</td>';
-        }
-      }
-      if (MONO_COLS.has(col)) return '<td class="mono">' + v + '</td>';
-      return '<td>' + v + '</td>';
-    }).join('') + '</tr>';
-  }).join('');
+def salvar_periodos_json(pasta: str):
+    """Gera periodos.json listando todos os CSVs disponiveis no historico."""
+    padrao = os.path.join(pasta, "sipii_caixa_*.csv")
+    arquivos = sorted(glob.glob(padrao), reverse=True)
+    periodos = []
+    for arq in arquivos:
+        nome = os.path.basename(arq)
+        data_str = nome.replace("sipii_caixa_", "").replace(".csv", "")
+        try:
+            dt = datetime.strptime(data_str, "%Y%m%d")
+            periodos.append({
+                "label": dt.strftime("%d/%m/%Y"),
+                "file":  f"saida/{nome}",
+                "data":  data_str,
+            })
+        except ValueError:
+            pass
+    # Adiciona o atual sempre no topo
+    periodos_final = [{"label": "Atual", "file": "saida/dados_atuais.csv", "data": "atual"}]
+    periodos_final.extend(periodos)
+    caminho = os.path.join(pasta, "periodos.json")
+    with open(caminho, "w", encoding="utf-8") as f:
+        json.dump(periodos_final, f, ensure_ascii=False, indent=2)
+    log(f"[OK] periodos.json: {len(periodos_final)} periodos")
 
-  document.getElementById('tbody').innerHTML = html;
-}
 
-// ============================================================
-// PAGINATION
-// ============================================================
-function mudarPag(d) {
-  var tot = Math.max(1, Math.ceil(filtered.length / POR_PAG));
-  pag = Math.max(0, Math.min(pag + d, tot - 1));
-  renderTable();
-  window.scrollTo({ top: document.querySelector('.stitle:last-of-type').offsetTop - 80, behavior: 'smooth' });
-}
+def salvar(df: pd.DataFrame, pasta: str):
+    if df.empty:
+        print("[ERRO] Nenhum dado para salvar.")
+        return
 
-// ============================================================
-// SORT
-// ============================================================
-function sortBy(idx) {
-  var ths = document.querySelectorAll('thead th');
-  ths.forEach(function(th, i) {
-    th.classList.remove('asc', 'desc');
-    if (i === idx) {
-      sortAsc = (sortIdx === idx) ? !sortAsc : true;
-      sortIdx = idx;
-      th.classList.add(sortAsc ? 'asc' : 'desc');
-    }
-  });
-  var col = columns[idx];
-  filtered.sort(function(a, b) {
-    var va = a[col] || '', vb = b[col] || '';
-    var na = parseNum(va), nb = parseNum(vb);
-    if (na !== null && nb !== null) return sortAsc ? na - nb : nb - na;
-    if (na !== null) return sortAsc ? -1 : 1;
-    if (nb !== null) return sortAsc ? 1 : -1;
-    return sortAsc ? va.localeCompare(vb,'pt-BR') : vb.localeCompare(va,'pt-BR');
-  });
-  pag = 0;
-  renderTable();
-}
+    validar(df)
+    os.makedirs(pasta, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d")
 
-// ============================================================
-// STATUS BANNER
-// ============================================================
-function setStatus(type, msg) {
-  var el = document.getElementById('status');
-  el.className = type;
-  el.innerHTML = type === 'loading'
-    ? '<div class="spin"></div><span>' + msg + '</span>'
-    : '<span>' + (type === 'ok' ? '\u2713' : '\u2717') + '&nbsp;&nbsp;' + msg + '</span>';
-}
-</script>
-</body>
-</html>
+    cols   = [c for c in df.columns if c != "CNPJ"]
+    df_out = df[cols]
+
+    p_atual = os.path.join(pasta, "dados_atuais.csv")
+    p_hist  = os.path.join(pasta, f"sipii_caixa_{ts}.csv")
+    df_out.to_csv(p_atual, index=False, encoding="utf-8-sig", sep=";")
+    df_out.to_csv(p_hist,  index=False, encoding="utf-8-sig", sep=";")
+    log(f"[OK] CSV: {p_atual}")
+
+    try:
+        p_xlsx = os.path.join(pasta, f"sipii_caixa_{ts}.xlsx")
+        with pd.ExcelWriter(p_xlsx, engine="openpyxl") as writer:
+            df_out.to_excel(writer, sheet_name="Todos", index=False)
+            for cat, grp in df_out.groupby("Categoria"):
+                grp.to_excel(writer, sheet_name=limpar_aba(cat), index=False)
+        log(f"[OK] Excel: {p_xlsx}")
+    except ImportError:
+        log("[AVISO] openpyxl nao instalado")
+
+    # Gera periodos.json para o HTML
+    salvar_periodos_json(pasta)
+
+    print(f"\n{'='*60}")
+    print("[OK] CONCLUIDO!")
+    print(f"   -> {p_atual}")
+    print(f"   -> {p_hist}")
+    print(f"{'='*60}\n")
+
+
+# ==========================================================
+# ENTRADA
+# ==========================================================
+if __name__ == "__main__":
+    args = parse_args()
+    df   = extrair(args)
+    salvar(df, args.saida)
