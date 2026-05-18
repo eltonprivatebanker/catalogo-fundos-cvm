@@ -1,0 +1,17 @@
+[
+  {
+    "label": "Atual",
+    "file": "saida/dados_atuais.csv",
+    "data": "atual"
+  },
+  {
+    "label": "18/05/2026",
+    "file": "saida/sipii_caixa_20260518.csv",
+    "data": "20260518"
+  },
+  {
+    "label": "17/05/2026",
+    "file": "saida/sipii_caixa_20260517.csv",
+    "data": "20260517"
+  }
+]
