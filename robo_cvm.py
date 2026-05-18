@@ -43,7 +43,7 @@ URL_CAD     = "https://dados.cvm.gov.br/dados/FI/CAD/DADOS/cad_fi.csv"
 URL_INF_MES = "https://dados.cvm.gov.br/dados/FI/DOC/INF_DIARIO/DADOS/inf_diario_fi_{yyyymm}.zip"
 CACHE_DIR   = ".cache_cvm"
 TIMEOUT     = 90
-MAX_RETRY   = 3
+MAX_RETRY   = 5
 
 # CNPJs conhecidos da Caixa como administradora (para busca no formato v3)
 CAIXA_CNPJS = [
@@ -213,9 +213,11 @@ def baixar_bytes(url: str, label: str = "", sem_cache: bool = False) -> Optional
         log(f"[cache] {label or os.path.basename(cache)}")
         with open(cache, "rb") as f:
             return f.read()
+    # Esperas progressivas: 10s, 30s, 60s entre tentativas
+    esperas = [10, 30, 60]
     for tentativa in range(MAX_RETRY):
         try:
-            log(f"[download] {label or url}")
+            log(f"[download] {label or url} (tentativa {tentativa+1}/{MAX_RETRY})")
             r = requests.get(url, timeout=TIMEOUT, headers={"User-Agent": "Mozilla/5.0"})
             r.raise_for_status()
             os.makedirs(CACHE_DIR, exist_ok=True)
@@ -227,8 +229,9 @@ def baixar_bytes(url: str, label: str = "", sem_cache: bool = False) -> Optional
             if tentativa == MAX_RETRY - 1:
                 log(f"[ERRO] Falhou apos {MAX_RETRY} tentativas: {e}")
                 return None
-            log(f"[AVISO] Tentativa {tentativa+1} falhou, retry em 3s...")
-            time.sleep(3)
+            espera = esperas[tentativa]
+            log(f"[AVISO] Tentativa {tentativa+1} falhou ({e}). Aguardando {espera}s...")
+            time.sleep(espera)
     return None
 
 def baixar_csv_bytes(conteudo: bytes) -> pd.DataFrame:
