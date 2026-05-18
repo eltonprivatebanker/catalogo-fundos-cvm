@@ -110,18 +110,17 @@ SCHEMAS = {
 
 
 def detectar_schema(colunas: list) -> dict:
-    """Detecta automaticamente a versao do formato do cadastro CVM."""
     cols_upper = [c.upper() for c in colunas]
-    if "CNPJ_ADMIN" in cols_upper or "PF_PJ_GESTOR" in cols_upper:
-        schema = SCHEMAS["v3"]
-        versao = "v3 (2025+)"
+    # v3 tem CNPJ_ADMIN E ainda ADMIN (texto) simultaneamente
+    if "CNPJ_ADMIN" in cols_upper and "ADMIN" in cols_upper:
+        versao = "v3-compat (2025+ com ADMIN texto)"
     elif "ADMIN" in cols_upper and "GESTOR" in cols_upper:
-        schema = SCHEMAS["v1"]
         versao = "v1/v2 (ate 2024)"
     else:
-        schema = SCHEMAS["v2"]
-        versao = "v2 (formato intermediario)"
-    log(f"   Schema detectado: {versao}")
+        versao = "v2-parcial"
+    # Sempre usa v1 schema se ADMIN texto existir
+    schema = SCHEMAS["v1"] if "ADMIN" in cols_upper else SCHEMAS["v2"]
+    log(f"   Schema: {versao}")
     return schema
 
 
@@ -387,10 +386,17 @@ def carregar_cadastro(sem_cache: bool = False,
         log(f"   Por CNPJ admin (Caixa): {mask.sum()} fundos acumulados")
 
     # Filtro de situacao (apenas fundos em funcionamento)
-    if not filtro_gestor and "SIT" in df.columns:
-        mask_sit = df["SIT"].fillna("").str.upper().str.contains("FUNCIONAMENTO", regex=False)
-        log(f"   Em funcionamento: {mask_sit.sum()} | Caixa+func: {(mask & mask_sit).sum()}")
-        mask &= mask_sit
+    if "SIT" in df.columns:
+        vals_sit = df["SIT"].dropna().unique()
+        log(f"   Valores em SIT: {list(vals_sit[:6])}")
+        # Exclui apenas fundos explicitamente cancelados/liquidados
+        mask_ruim = df["SIT"].fillna("").str.upper().str.contains(
+            "CANCEL|LIQUID|ENCERR", regex=True
+        )
+        if not filtro_gestor:
+            antes = mask.sum()
+            mask &= ~mask_ruim
+            log(f"   Apos excluir cancelados: {mask.sum()} (antes: {antes})")
 
     df_out = df[mask].copy()
     log(f"   [OK] {len(df_out)} fundos Caixa encontrados")
