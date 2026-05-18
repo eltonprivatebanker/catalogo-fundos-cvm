@@ -385,18 +385,30 @@ def carregar_cadastro(sem_cache: bool = False,
                     mask |= extra
         log(f"   Por CNPJ admin (Caixa): {mask.sum()} fundos acumulados")
 
-    # Filtro de situacao (apenas fundos em funcionamento)
+    # Filtro de situacao
+    # Valores conhecidos: 'EM FUNCIONAMENTO NORMAL', 'CANCELADA', 'LIQUIDACAO',
+    #                     'FASE PRE-OPERACIONAL', 'INCORPORACAO', 'EM ANALISE'
     if "SIT" in df.columns:
         vals_sit = df["SIT"].dropna().unique()
-        log(f"   Valores em SIT: {list(vals_sit[:6])}")
-        # Exclui apenas fundos explicitamente cancelados/liquidados
-        mask_ruim = df["SIT"].fillna("").str.upper().str.contains(
-            "CANCEL|LIQUID|ENCERR", regex=True
-        )
+        log(f"   Valores em SIT: {list(vals_sit)}")
         if not filtro_gestor:
             antes = mask.sum()
-            mask &= ~mask_ruim
-            log(f"   Apos excluir cancelados: {mask.sum()} (antes: {antes})")
+            # Mant?m ativos: funcionamento, pr?-operacional, incorpora??o, an?lise
+            # Usa str.normalize para tratar acentos
+            sit_norm = df["SIT"].fillna("").apply(
+                lambda x: x.upper()
+                .replace("\xe9", "E").replace("\xe3", "A")
+                .replace("\xe1", "A").replace("\xf3", "O")
+            )
+            mask_ok = (
+                sit_norm.str.contains("FUNCIONAMENTO", regex=False) |
+                sit_norm.str.contains("OPER", regex=False) |
+                sit_norm.str.contains("ANALISE", regex=False) |
+                sit_norm.str.contains("ANALISE", regex=False) |
+                sit_norm.str.contains("INCORPORA", regex=False)
+            )
+            mask &= mask_ok
+            log(f"   Fundos ativos apos filtro SIT: {mask.sum()} (antes: {antes})")
 
     df_out = df[mask].copy()
     log(f"   [OK] {len(df_out)} fundos Caixa encontrados")
