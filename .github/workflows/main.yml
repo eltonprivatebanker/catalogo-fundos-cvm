@@ -16,7 +16,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -25,7 +25,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Executar robo_cvm.py
-        run: python robo_cvm.py --modo-cvm --saida ./saida
+        run: python robo_cvm.py --lista fundos_caixa.json --saida ./saida
         timeout-minutes: 30
 
       - name: Commit e push dos resultados
