@@ -5,6 +5,11 @@
     "data": "atual"
   },
   {
+    "label": "07/08/2026",
+    "file": "saida/sipii_caixa_20260807.csv",
+    "data": "20260807"
+  },
+  {
     "label": "05/08/2026",
     "file": "saida/sipii_caixa_20260805.csv",
     "data": "20260805"
